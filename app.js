@@ -1,25 +1,36 @@
 const express = require("express");
 const cors = require("cors");
+const morgan = require("morgan");
+const compression = require("compression");
+const cookieParser = require("cookie-parser");
+
+const routes = require("./src/routes/index");
 const errorMiddleware = require("./src/middlewares/error.middleware");
-const { successResponse } = require("./src/utils/response");
-const AppError = require("./src/utils/AppError");
+const securityHeaders = require("./src/middlewares/securityHeaders.middleware");
+const corsOptions = require("./src/configs/cors");
 
 const app = express();
 
-app.disable("x-powered-by");
-app.use(cors({ origin: process.env.CLIENT_URL || "http://localhost:4000" }));
+// Sau reverse proxy của hosting (Render/Vercel...), tin proxy đầu tiên để req.ip là IP thật
+// của client — rate limit (theo IP) mới chính xác. Localhost không có proxy nên chỉ bật ở production.
+if (process.env.NODE_ENV === "production") {
+  app.set("trust proxy", 1);
+}
+
+// Tắt ETag: response JSON từ API không dùng cache 304. Nếu bật, client có thể nhận 304
+// với thân rỗng; axios coi 200-304 là thành công nhưng `response.data` rỗng -> lỗi parse / mất user.
+app.set("etag", false);
+
+app.use(securityHeaders);
+app.use(cors(corsOptions));
+// Nén response (gzip) — JSON API (danh sách gia sư/lớp) giảm ~70-80% băng thông.
+app.use(compression());
+app.use(morgan("dev"));
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser());
 
-app.get("/health", (req, res) =>
-  successResponse(res, {
-    message: "WebTutor_BE is running",
-    data: { service: "backend", environment: process.env.NODE_ENV || "development" },
-  }),
-);
-
-app.use((req, res, next) => {
-  next(new AppError(`Route not found: ${req.method} ${req.originalUrl}`, 404));
-});
+app.use("/api", routes);
 
 app.use(errorMiddleware);
 

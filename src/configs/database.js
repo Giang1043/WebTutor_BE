@@ -1,19 +1,14 @@
 const mongoose = require("mongoose");
 
-const connectDatabase = async () => {
-  const uri = process.env.MONGODB_URI;
-  if (!uri) {
-    throw new Error("MONGODB_URI is required to start the backend");
-  }
-
-  await mongoose.connect(uri);
-  return mongoose.connection;
-};
-
-const disconnectDatabase = async () => {
-  if (mongoose.connection.readyState !== 0) {
-    await mongoose.disconnect();
+// Kết nối tới MongoDB
+const connectDB = async () => {
+  try {
+    const conn = await mongoose.connect(process.env.MONGODB_URI);
+    console.log(`MongoDB connected: ${conn.connection.host}`);
+  } catch (error) {
+    console.error(`MongoDB connection error: ${error.message}`);
+    process.exit(1);
   }
 };
 
-module.exports = { connectDatabase, disconnectDatabase };
+module.exports = connectDB;

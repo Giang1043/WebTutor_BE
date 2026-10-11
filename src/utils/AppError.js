@@ -1,9 +1,9 @@
+// Lỗi có chủ đích cho người dùng (kèm mã HTTP), phân biệt với lỗi hệ thống
 class AppError extends Error {
-  constructor(message, statusCode = 500) {
+  constructor(message, statusCode) {
     super(message);
-    this.name = "AppError";
     this.statusCode = statusCode;
-    this.isOperational = statusCode < 500;
+    this.isUserError = true;
   }
 }
 
