@@ -1,22 +1,11 @@
 require("dotenv").config();
-
-const http = require("node:http");
 const app = require("./app");
-const { connectDatabase } = require("./src/configs/database");
+const connectDB = require("./src/core/configs/database");
 
-const port = Number(process.env.PORT || 5003);
-const server = http.createServer(app);
+const PORT = process.env.PORT || 5000;
 
-const start = async () => {
-  await connectDatabase();
-  server.listen(port, () => {
-    console.log(`WebTutor_BE listening on port ${port}`);
+connectDB().then(() => {
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT} in ${process.env.NODE_ENV} mode`);
   });
-};
-
-start().catch((error) => {
-  console.error("Backend startup failed:", error.message);
-  process.exitCode = 1;
 });
-
-module.exports = { server, start };
