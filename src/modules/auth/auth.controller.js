@@ -166,20 +166,6 @@ const resetPassword = async (req, res, next) => {
   }
 };
 
-const getUserInfo = async (req, res, next) => {
-  try {
-    const user = await authService.getUserInfo(req.user.id);
-
-    return successResponse(res, {
-      statusCode: HTTP_STATUS.OK,
-      message: MESSAGE.USER_INFO_SUCCESS,
-      data: { user },
-    });
-  } catch (error) {
-    handleError(error, res, next);
-  }
-};
-
 module.exports = {
   register,
   verifyOtp,
@@ -191,5 +177,4 @@ module.exports = {
   googleLogin,
   logout,
   refreshToken,
-  getUserInfo,
 };

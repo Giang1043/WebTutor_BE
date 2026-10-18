@@ -30,7 +30,4 @@ router.post("/forgot-password", validate(forgotPasswordSchema), authController.f
 router.post("/verify-forgot-password-otp", validate(verifyForgotPasswordOtpSchema), authController.verifyForgotPasswordOtp);
 router.post("/reset-password", validate(resetPasswordSchema), authController.resetPassword);
 
-// Thông tin người dùng
-router.get("/user-info", authMiddleware, authController.getUserInfo);
-
 module.exports = router;

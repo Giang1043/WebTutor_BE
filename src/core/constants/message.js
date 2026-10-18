@@ -11,6 +11,9 @@ const MESSAGE = {
 
   // User
   USER_NOT_FOUND: "Không tìm thấy người dùng",
+  UPDATE_PROFILE_SUCCESS: "Cập nhật thông tin cá nhân thành công",
+  UPLOAD_AVATAR_SUCCESS: "Cập nhật ảnh đại diện thành công",
+  UPLOAD_AVATAR_FAILED: "Tải ảnh lên thất bại",
   EMAIL_ALREADY_EXISTS: "Email đã được sử dụng",
   INVALID_CREDENTIALS: "Email hoặc mật khẩu không đúng",
   PASSWORD_MISMATCH: "Mật khẩu xác nhận không khớp",
@@ -41,6 +44,13 @@ const MESSAGE = {
 
   // Validation
   VALIDATION_ERROR: "Dữ liệu đầu vào không hợp lệ",
+
+  // Tutor
+  TUTOR_REGISTER_SUCCESS: "Đăng ký làm gia sư thành công, vui lòng chờ phê duyệt",
+  TUTOR_ALREADY_REGISTERED: "Bạn đã đăng ký làm gia sư trước đó",
+  TUTOR_NOT_FOUND: "Không tìm thấy thông tin gia sư",
+  TUTOR_GET_SUCCESS: "Lấy thông tin gia sư thành công",
+  TUTOR_UPDATE_SUCCESS: "Cập nhật thông tin gia sư thành công",
 
   // Server
   INTERNAL_SERVER_ERROR: "Lỗi máy chủ nội bộ",

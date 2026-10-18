@@ -28,8 +28,14 @@ const _formatUser = (user) => ({
   role: user.role,
   type: user.type,
   phone: user.phone,
+  gender: user.gender,
   dateOfBirth: user.dateOfBirth,
   avatar: user.avatar,
+  isActive: user.isActive,
+  isVerified: user.isVerified,
+  phoneActivated: user.phoneActivated,
+  createdAt: user.createdAt,
+  updatedAt: user.updatedAt,
 });
 
 const _createAndSendOtp = async ({ email, fullName, type }) => {
@@ -79,6 +85,7 @@ const register = async ({ fullName, email, password, role, phone, dateOfBirth })
     dateOfBirth,
     type: ACCOUNT_TYPE.LOCAL,
     isVerified: false,
+    phoneActivated: true,
   });
 
   await _createAndSendOtp({ email, fullName, type: OTP_TYPE.REGISTER });
@@ -216,6 +223,15 @@ const login = async ({ email, password }) => {
     throw new AppError("Tài khoản của bạn đã bị vô hiệu hóa", HTTP_STATUS.FORBIDDEN);
   }
 
+  // Tài khoản Google: không có hash mật khẩu — tránh gọi bcrypt (sẽ lỗi Illegal arguments: string, object)
+  if (user.type === ACCOUNT_TYPE.GOOGLE) {
+    throw new AppError(MESSAGE.EXISTING_ACCOUNT_GOOGLE, HTTP_STATUS.BAD_REQUEST);
+  }
+
+  if (typeof user.password !== "string" || !user.password) {
+    throw new AppError(MESSAGE.INVALID_CREDENTIALS, HTTP_STATUS.UNAUTHORIZED);
+  }
+
   const isPasswordValid = await comparePassword(password, user.password);
   if (!isPasswordValid) {
     throw new AppError(MESSAGE.INVALID_CREDENTIALS, HTTP_STATUS.UNAUTHORIZED);
@@ -296,16 +312,6 @@ const googleLogin = async ({ credential }) => {
   return { accessToken, refreshToken, user: _formatUser(newUser) };
 };
 
-// ─── GET USER INFO ───
-
-const getUserInfo = async (userId) => {
-  const user = await userRepository.findById(userId);
-  if (!user) {
-    throw new AppError(MESSAGE.USER_NOT_FOUND, HTTP_STATUS.NOT_FOUND);
-  }
-  return user;
-};
-
 module.exports = {
   register,
   verifyOtp,
@@ -317,5 +323,4 @@ module.exports = {
   googleLogin,
   logout,
   refreshToken,
-  getUserInfo,
 };
