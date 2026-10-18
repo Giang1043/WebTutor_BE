@@ -1,20 +1,17 @@
+const { OAuth2Client } = require("google-auth-library");
 const userRepository = require("../users/user.repository");
 const otpRepository = require("../otp/otp.repository");
 const { hashPassword, comparePassword } = require("../../core/utils/hash");
-const { generateAccessToken, generateRefreshToken, verifyRefreshToken } = require("../../core/utils/token");
+const { generateAccessToken, generateRefreshToken, verifyRefreshToken, generateResetToken, verifyResetToken } = require("../../core/utils/token");
 const { generateOtp, getOtpExpiry, isResendTooSoon, getResendWaitSeconds, OTP_EXPIRES_MINUTES } = require("../../core/utils/otp");
-const { sendOtpEmail } = require("../../core/utils/email");
+const { sendOtpEmail, sendForgotPasswordOtpEmail } = require("../../core/utils/email");
 const MESSAGE = require("../../core/constants/message");
 const HTTP_STATUS = require("../../core/constants/status");
 const ACCOUNT_TYPE = require("../../core/constants/accountType");
 const OTP_TYPE = require("../../core/constants/otpType");
+const AppError = require("../../core/utils/AppError");
 
-class AppError extends Error {
-  constructor(message, statusCode) {
-    super(message);
-    this.statusCode = statusCode;
-  }
-}
+const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 const _issueTokens = async (user) => {
   const payload = { id: user._id, email: user.email, role: user.role };
@@ -31,6 +28,7 @@ const _formatUser = (user) => ({
   role: user.role,
   type: user.type,
   phone: user.phone,
+  dateOfBirth: user.dateOfBirth,
   avatar: user.avatar,
 });
 
@@ -46,15 +44,23 @@ const _createAndSendOtp = async ({ email, fullName, type }) => {
   const expiresAt = getOtpExpiry();
 
   await otpRepository.create({ email, otp, type, expiresAt });
-  await sendOtpEmail({ to: email, fullName, otp, expiresInMinutes: OTP_EXPIRES_MINUTES });
+
+  if (type === OTP_TYPE.FORGOT_PASSWORD) {
+    await sendForgotPasswordOtpEmail({ to: email, fullName, otp, expiresInMinutes: OTP_EXPIRES_MINUTES });
+  } else {
+    await sendOtpEmail({ to: email, fullName, otp, expiresInMinutes: OTP_EXPIRES_MINUTES });
+  }
 };
 
 // ─── REGISTER ───
 
-const register = async ({ fullName, email, password, role, phone }) => {
+const register = async ({ fullName, email, password, role, phone, dateOfBirth }) => {
   const existingUser = await userRepository.findByEmail(email);
 
   if (existingUser) {
+    if (existingUser.type === ACCOUNT_TYPE.GOOGLE) {
+      throw new AppError(MESSAGE.EXISTING_ACCOUNT_GOOGLE, HTTP_STATUS.BAD_REQUEST);
+    }
     if (existingUser.isVerified) {
       throw new AppError(MESSAGE.EMAIL_ALREADY_EXISTS, HTTP_STATUS.CONFLICT);
     }
@@ -70,6 +76,7 @@ const register = async ({ fullName, email, password, role, phone }) => {
     password: hashedPassword,
     role,
     phone,
+    dateOfBirth,
     type: ACCOUNT_TYPE.LOCAL,
     isVerified: false,
   });
@@ -114,7 +121,7 @@ const verifyOtp = async ({ email, otp, type = OTP_TYPE.REGISTER }) => {
   return { email };
 };
 
-// ─── RESEND OTP ───────────────────────────────────────────────────────────────
+// ─── RESEND OTP ───
 
 const resendOtp = async ({ email, type = OTP_TYPE.REGISTER }) => {
   const user = await userRepository.findByEmail(email);
@@ -131,7 +138,69 @@ const resendOtp = async ({ email, type = OTP_TYPE.REGISTER }) => {
   return { email };
 };
 
-// ─── LOGIN ────────────────────────────────────────────────────────────────────
+// ─── FORGOT PASSWORD ───
+
+const forgotPassword = async ({ email }) => {
+  const user = await userRepository.findByEmail(email);
+
+  // Không tiết lộ email có tồn tại hay không (bảo mật)
+  if (!user || !user.isVerified) return { email };
+
+  // Chỉ cho phép đặt lại mật khẩu cho tài khoản sử dụng mật khẩu (local)
+  if (user.type === ACCOUNT_TYPE.GOOGLE) {
+    throw new AppError(MESSAGE.ACCOUNT_NOT_CHANGE_PASSWORD, HTTP_STATUS.BAD_REQUEST);
+  }
+
+  await _createAndSendOtp({ email, fullName: user.fullName, type: OTP_TYPE.FORGOT_PASSWORD });
+
+  return { email };
+};
+
+// ─── VERIFY FORGOT PASSWORD OTP ───
+
+const verifyForgotPasswordOtp = async ({ email, otp }) => {
+  const user = await userRepository.findByEmail(email);
+  if (!user || !user.isVerified) {
+    throw new AppError(MESSAGE.USER_NOT_FOUND, HTTP_STATUS.NOT_FOUND);
+  }
+
+  const otpDoc = await otpRepository.findLatestActiveByEmailAndType(email, OTP_TYPE.FORGOT_PASSWORD);
+  if (!otpDoc) {
+    throw new AppError(MESSAGE.OTP_EXPIRED, HTTP_STATUS.BAD_REQUEST);
+  }
+
+  if (otpDoc.otp !== otp) {
+    throw new AppError(MESSAGE.OTP_INVALID, HTTP_STATUS.BAD_REQUEST);
+  }
+
+  // OTP hợp lệ → xóa và cấp resetToken
+  await otpRepository.deleteByEmailAndType(email, OTP_TYPE.FORGOT_PASSWORD);
+
+  const resetToken = generateResetToken({ id: user._id, email: user.email });
+
+  return { resetToken };
+};
+
+// ─── RESET PASSWORD ───
+
+const resetPassword = async ({ resetToken, newPassword }) => {
+  let decoded;
+  try {
+    decoded = verifyResetToken(resetToken);
+  } catch {
+    throw new AppError(MESSAGE.RESET_TOKEN_INVALID, HTTP_STATUS.UNAUTHORIZED);
+  }
+
+  const user = await userRepository.findById(decoded.id);
+  if (!user) {
+    throw new AppError(MESSAGE.USER_NOT_FOUND, HTTP_STATUS.NOT_FOUND);
+  }
+
+  const hashedPassword = await hashPassword(newPassword);
+  await userRepository.updatePassword(user._id, hashedPassword);
+};
+
+// ─── LOGIN ───
 
 const login = async ({ email, password }) => {
   const user = await userRepository.findByEmail(email, true);
@@ -156,13 +225,13 @@ const login = async ({ email, password }) => {
   return { accessToken, refreshToken, user: _formatUser(user) };
 };
 
-// ─── LOGOUT ───────────────────────────────────────────────────────────────────
+// ─── LOGOUT ───
 
 const logout = async (userId) => {
   await userRepository.updateRefreshToken(userId, null);
 };
 
-// ─── REFRESH TOKEN ────────────────────────────────────────────────────────────
+// ─── REFRESH TOKEN ───
 
 const refreshToken = async (token) => {
   if (!token) {
@@ -184,7 +253,50 @@ const refreshToken = async (token) => {
   return { accessToken, refreshToken: newRefreshToken };
 };
 
-// ─── GET USER INFO ────────────────────────────────────────────────────────────
+// ─── GOOGLE LOGIN ───
+
+const googleLogin = async ({ credential }) => {
+  let payload;
+  try {
+    const ticket = await googleClient.verifyIdToken({
+      idToken: credential,
+      audience: process.env.GOOGLE_CLIENT_ID,
+    });
+    payload = ticket.getPayload();
+  } catch {
+    throw new AppError(MESSAGE.GOOGLE_TOKEN_INVALID, HTTP_STATUS.UNAUTHORIZED);
+  }
+
+  const { email, name, picture } = payload;
+
+  const existingUser = await userRepository.findByEmail(email);
+
+  if (existingUser) {
+    if (existingUser.type === ACCOUNT_TYPE.LOCAL) {
+      throw new AppError(MESSAGE.EXISTING_ACCOUNT_LOCAL, HTTP_STATUS.BAD_REQUEST);
+    }
+
+    if (!existingUser.isActive) {
+      throw new AppError("Tài khoản của bạn đã bị vô hiệu hóa", HTTP_STATUS.FORBIDDEN);
+    }
+
+    const { accessToken, refreshToken } = await _issueTokens(existingUser);
+    return { accessToken, refreshToken, user: _formatUser(existingUser) };
+  }
+
+  const newUser = await userRepository.create({
+    fullName: name,
+    email,
+    avatar: picture,
+    type: ACCOUNT_TYPE.GOOGLE,
+    isVerified: true,
+  });
+
+  const { accessToken, refreshToken } = await _issueTokens(newUser);
+  return { accessToken, refreshToken, user: _formatUser(newUser) };
+};
+
+// ─── GET USER INFO ───
 
 const getUserInfo = async (userId) => {
   const user = await userRepository.findById(userId);
@@ -194,4 +306,16 @@ const getUserInfo = async (userId) => {
   return user;
 };
 
-module.exports = { register, verifyOtp, resendOtp, login, logout, refreshToken, getUserInfo };
+module.exports = {
+  register,
+  verifyOtp,
+  resendOtp,
+  forgotPassword,
+  verifyForgotPasswordOtp,
+  resetPassword,
+  login,
+  googleLogin,
+  logout,
+  refreshToken,
+  getUserInfo,
+};
