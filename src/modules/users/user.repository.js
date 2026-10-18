@@ -31,6 +31,14 @@ const updatePassword = async (userId, hashedPassword) => {
   return await User.findByIdAndUpdate(userId, { password: hashedPassword }, { new: true });
 };
 
+const updateProfile = async (userId, updateData) => {
+  return await User.findByIdAndUpdate(userId, updateData, { new: true, runValidators: true });
+};
+
+const updateRole = async (userId, role) => {
+  return await User.findByIdAndUpdate(userId, { role }, { new: true });
+};
+
 module.exports = {
   findByEmail,
   findById,
@@ -39,4 +47,6 @@ module.exports = {
   findByRefreshToken,
   verifyUser,
   updatePassword,
+  updateProfile,
+  updateRole,
 };
