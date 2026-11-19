@@ -1,16 +1,29 @@
 const HTTP_STATUS = require("../constants/status");
 const MESSAGE = require("../constants/message");
 
+// Middleware xử lý lỗi tập trung: lỗi người dùng trả message thật, lỗi hệ thống chỉ log ở BE
 const errorMiddleware = (err, req, res, next) => {
-  console.error(err.stack);
+  // Lỗi multer (file quá lớn, sai field) do người dùng gửi sai, không phải lỗi hệ thống
+  if (err.name === "MulterError") err.statusCode = HTTP_STATUS.BAD_REQUEST;
 
-  const statusCode = err.statusCode || HTTP_STATUS.INTERNAL_SERVER_ERROR;
-  const message = err.message || MESSAGE.INTERNAL_SERVER_ERROR;
+  const isUserError = err.isUserError === true || (err.statusCode && err.statusCode < 500);
 
-  res.status(statusCode).json({
+  if (isUserError) {
+    return res.status(err.statusCode || HTTP_STATUS.BAD_REQUEST).json({
+      success: false,
+      message: err.message,
+      ...(err.errors ? { errors: err.errors } : {}),
+    });
+  }
+
+  // Lỗi hệ thống → log đầy đủ ở terminal BE để dev điều tra.
+  console.error(`[SYSTEM ERROR] ${req.method} ${req.originalUrl}`);
+  console.error(err.stack || err);
+
+  // FE chỉ nhận thông báo chung chung, không kèm message kỹ thuật hay stack trace.
+  return res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json({
     success: false,
-    message,
-    ...(process.env.NODE_ENV === "development" && { stack: err.stack }),
+    message: MESSAGE.INTERNAL_SERVER_ERROR,
   });
 };
 
