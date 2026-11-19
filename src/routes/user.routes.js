@@ -2,8 +2,9 @@ const express = require("express");
 const router = express.Router();
 
 const userController = require("../controllers/user.controller");
-const { updateProfileSchema, validate } = require("../validations/user.validation");
+const { updateProfileSchema } = require("../validations/user.validation");
 const authMiddleware = require("../middlewares/auth.middleware");
+const { validate } = require("../middlewares/validate.middleware");
 const { uploadAvatarMiddleware } = require("../utils/upload");
 
 router.get("/user-info", authMiddleware, userController.getUserInfo);
