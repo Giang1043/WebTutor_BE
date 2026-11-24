@@ -60,36 +60,8 @@ const listClassQuerySchema = Joi.object({
   limit: Joi.number().integer().min(1).max(50).default(6),
 });
 
-const validateBody = (schema) => (req, res, next) => {
-  const { error, value } = schema.validate(req.body, { abortEarly: false, convert: true });
-  if (error) {
-    return res.status(422).json({
-      success: false,
-      message: "Dữ liệu đầu vào không hợp lệ",
-      errors: error.details.map((item) => item.message),
-    });
-  }
-  req.body = value;
-  next();
-};
-
-const validateQuery = (schema) => (req, res, next) => {
-  const { error, value } = schema.validate(req.query, { abortEarly: false, convert: true });
-  if (error) {
-    return res.status(422).json({
-      success: false,
-      message: "Bộ lọc không hợp lệ",
-      errors: error.details.map((item) => item.message),
-    });
-  }
-  req.query = value;
-  next();
-};
-
 module.exports = {
   quoteClassSchema,
   createClassSchema,
   listClassQuerySchema,
-  validateBody,
-  validateQuery,
 };

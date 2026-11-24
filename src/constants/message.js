@@ -44,6 +44,12 @@ const MESSAGE = {
 
   // Validation
   VALIDATION_ERROR: "Dữ liệu đầu vào không hợp lệ",
+  QUERY_VALIDATION_ERROR: "Bộ lọc không hợp lệ",
+  INPUT_TOO_DEEP: "Dữ liệu đầu vào lồng quá sâu",
+  ROUTE_NOT_FOUND: "Route not found",
+  ORIGIN_NOT_ALLOWED: "Origin không được phép",
+  LOGIN_RATE_LIMITED: "Bạn đã đăng nhập sai quá nhiều lần, vui lòng thử lại sau ít phút.",
+  OTP_RATE_LIMITED: "Bạn thao tác OTP quá nhiều lần, vui lòng thử lại sau ít phút",
 
   // Tutor
   TUTOR_REGISTER_SUCCESS: "Đăng ký làm gia sư thành công, vui lòng chờ phê duyệt",
