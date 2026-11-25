@@ -4,7 +4,6 @@
   "description": "WebTutorCenter Backend API",
   "main": "server.js",
   "scripts": {
-    "test": "node --test",
     "start": "node server.js",
     "seed:users": "node scripts/seedDemoData.js users",
     "seed:tutors": "node scripts/seedDemoData.js tutors",
@@ -12,17 +11,16 @@
     "seed:demo": "node scripts/seedDemoData.js all",
     "dev": "node --watch server.js",
     "seed:locations": "node scripts/seedLocations.js",
-    "seed:classes": "node scripts/seedClasses.js"
+    "seed:classes": "node scripts/seedClasses.js",
+    "seed:pricing": "node scripts/seedClassPricing.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
     "cloudinary": "^2.10.0",
-    "compression": "^1.8.2",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
-    "express-rate-limit": "^8.7.5",
     "google-auth-library": "^10.6.2",
     "joi": "^17.13.3",
     "jsonwebtoken": "^9.0.2",
