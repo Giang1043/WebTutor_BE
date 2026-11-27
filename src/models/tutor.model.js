@@ -1,6 +1,5 @@
 const mongoose = require("mongoose");
 const {
-  SUBJECTS,
   OCCUPATION_STATUS,
   TUTOR_STATUS,
   DAYS_OF_WEEK,
@@ -43,9 +42,9 @@ const tutorSchema = new mongoose.Schema(
       match: [PHONE_REGEX, "Số điện thoại không hợp lệ (VD: 0912345678 hoặc 84912345678)"],
     },
     subjects: {
+      // Danh mục môn do admin quản lý trong DB → validate ở service layer, không enum cứng.
       type: [String],
       required: [true, "Danh sách môn học là bắt buộc"],
-      enum: { values: SUBJECTS, message: "Môn học '{VALUE}' không hợp lệ" },
       validate: {
         validator: (arr) => Array.isArray(arr) && arr.length >= 1,
         message: "Phải chọn ít nhất 1 môn học",
@@ -108,6 +107,38 @@ const tutorSchema = new mongoose.Schema(
       minlength: [10, "Phần giới thiệu phải có ít nhất 10 ký tự"],
       maxlength: [2000, "Phần giới thiệu không được vượt quá 2000 ký tự"],
     },
+    // Ảnh CCCD/CMND để xác thực danh tính gia sư (bắt buộc khi đăng ký).
+    // Chỉ admin (duyệt hồ sơ) và chính gia sư được xem — không lộ ở endpoint công khai.
+    cccdFrontImage: {
+      type: String,
+      required: [true, "Ảnh CCCD mặt trước là bắt buộc"],
+      trim: true,
+    },
+    cccdBackImage: {
+      type: String,
+      required: [true, "Ảnh CCCD mặt sau là bắt buộc"],
+      trim: true,
+    },
+    // Ảnh thẻ sinh viên mặt trước / mặt sau — mặt trước bắt buộc khi tình trạng là "sinh viên".
+    studentCardFrontImage: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+    studentCardBackImage: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+    // Ảnh bằng cấp (tối đa 5 ảnh) — bắt buộc khi đã tốt nghiệp / giáo viên.
+    certificateImages: {
+      type: [String],
+      default: [],
+      validate: {
+        validator: (arr) => !Array.isArray(arr) || arr.length <= 5,
+        message: "Tối đa 5 ảnh bằng cấp",
+      },
+    },
     status: {
       type: String,
       enum: Object.values(TUTOR_STATUS),
@@ -135,6 +166,24 @@ const tutorSchema = new mongoose.Schema(
       type: Number,
       default: 0,
       min: [0, "Số lớp không thể âm"],
+    },
+    // Thống kê đánh giá (cập nhật lại mỗi khi có đánh giá mới / bị xóa mềm / khôi phục).
+    // averageRating = ratingSum / reviewCount (0 nếu chưa có đánh giá nào).
+    ratingSum: {
+      type: Number,
+      default: 0,
+      min: [0, "Tổng số sao không thể âm"],
+    },
+    reviewCount: {
+      type: Number,
+      default: 0,
+      min: [0, "Số lượt đánh giá không thể âm"],
+    },
+    averageRating: {
+      type: Number,
+      default: 0,
+      min: [0, "Điểm đánh giá không thể âm"],
+      max: [5, "Điểm đánh giá tối đa là 5"],
     },
   },
   {

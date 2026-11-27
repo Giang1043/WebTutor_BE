@@ -26,15 +26,74 @@ const applyForClass = async (req, res, next) => {
 
 const getMyApplications = async (req, res, next) => {
   try {
-    const applications = await classApplicationService.getMyApplications(req.user.id, req.query);
+    const result = await classApplicationService.getMyApplications(req.user.id, req.query);
     return successResponse(res, {
       statusCode: HTTP_STATUS.OK,
       message: MESSAGE.CLASS_APPLICATION_LIST_SUCCESS,
-      data: { applications },
+      data: result,
     });
   } catch (error) {
     handleError(error, res, next);
   }
 };
 
-module.exports = { applyForClass, getMyApplications };
+// Người đăng: danh sách gia sư ứng tuyển bài đăng của mình
+const getApplicants = async (req, res, next) => {
+  try {
+    const result = await classApplicationService.getApplicantsForPoster(req.user.id, req.params.id);
+    return successResponse(res, {
+      statusCode: HTTP_STATUS.OK,
+      message: MESSAGE.CLASS_APPLICANTS_LIST_SUCCESS,
+      data: result,
+    });
+  } catch (error) {
+    handleError(error, res, next);
+  }
+};
+
+// Người đăng: chọn 1 gia sư từ danh sách ứng tuyển
+const selectApplicant = async (req, res, next) => {
+  try {
+    const application = await classApplicationService.selectApplicant(
+      req.user.id,
+      req.params.id,
+      req.params.applicationId,
+    );
+    return successResponse(res, {
+      statusCode: HTTP_STATUS.OK,
+      message: MESSAGE.CLASS_APPLICANT_SELECT_SUCCESS,
+      data: { application },
+    });
+  } catch (error) {
+    handleError(error, res, next);
+  }
+};
+
+const cancelApplication = async (req, res, next) => {
+  try {
+    const application = await classApplicationService.cancelApplication(
+      req.user.id,
+      req.params.id,
+      req.body.reason
+    );
+    const message =
+      application.status === "cancelled"
+        ? MESSAGE.CLASS_APPLICATION_CANCEL_SUCCESS
+        : MESSAGE.CLASS_APPLICATION_CANCEL_REQUEST_SUCCESS;
+    return successResponse(res, {
+      statusCode: HTTP_STATUS.OK,
+      message,
+      data: { application },
+    });
+  } catch (error) {
+    handleError(error, res, next);
+  }
+};
+
+module.exports = {
+  applyForClass,
+  getApplicants,
+  selectApplicant,
+  getMyApplications,
+  cancelApplication,
+};

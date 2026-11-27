@@ -3,13 +3,21 @@ const HTTP_STATUS = require("../constants/status");
 const locationRepository = require("../repositories/location.repository");
 const classRepository = require("../repositories/class.repository");
 const tutorRepository = require("../repositories/tutor.repository");
+const userRepository = require("../repositories/user.repository");
 const classApplicationRepository = require("../repositories/class.application.repository");
-const { ClassMapper } = require("../mappers");
+const reviewRepository = require("../repositories/review.repository");
+const OCCUPATION_STATUS = require("../constants/occupationStatus");
+const { ClassMapper, ClassApplicationMapper } = require("../mappers");
 const MESSAGE = require("../constants/message");
-const { SUBJECTS } = require("../constants/tutor");
+const subjectService = require("./subject.service");
 const classPricingRepository = require("../repositories/class.pricing.repository");
 const promoService = require("./promo.service");
 const promoRepository = require("../repositories/promo.repository");
+const notificationService = require("./notification.service");
+const { CLASS_STATUS } = require("../models/class.model");
+const { NOTIFICATION_TYPES } = require("../models/notification.model");
+const { buildPagination } = require("../utils/pagination");
+const { generateUniqueCode } = require("../utils/code");
 
 let cachedPricingConfig = null;
 let pricingConfigCachedAt = 0;
@@ -82,14 +90,12 @@ const ensurePricingInputValid = (payload, configDoc) => {
   }
 };
 
-const generateClassCode = async () => {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const classCode = String(Math.floor(10000 + Math.random() * 90000));
-    const exists = await classRepository.findByClassCode(classCode);
-    if (!exists) return classCode;
-  }
-  throw new AppError("Không thể tạo mã lớp, vui lòng thử lại", HTTP_STATUS.INTERNAL_SERVER_ERROR);
-};
+const generateClassCode = () =>
+  generateUniqueCode({
+    generate: () => String(Math.floor(10000 + Math.random() * 90000)),
+    exists: (classCode) => classRepository.findByClassCode(classCode),
+    errorMessage: "Không thể tạo mã lớp, vui lòng thử lại",
+  });
 
 const ensureLocationValid = async (provinceCode, districtCode) => {
   const [province, district] = await Promise.all([
@@ -133,7 +139,7 @@ const buildClassData = async (payload, userId) => {
   let finalFeePerMonth = pricing.feePerMonth;
   let promoDoc = null;
   if (payload.promoCode) {
-    const result = await promoService.evaluatePromo(payload.promoCode, pricing.feePerMonth);
+    const result = await promoService.evaluatePromo(payload.promoCode, pricing.feePerMonth, userId);
     promoDoc = result.promo;
     promoCode = result.promo.code;
     promoDiscount = result.discountAmount;
@@ -212,6 +218,10 @@ const maskClassItem = async (classItem, user) => {
 };
 
 const createClass = async (payload, userId) => {
+  // Môn học phải thuộc danh mục đang bật (nguồn DB, không còn fix cứng)
+  if (!(await subjectService.isValidSubjectName(payload.subject))) {
+    throw new AppError(MESSAGE.SUBJECT_NOT_FOUND, HTTP_STATUS.UNPROCESSABLE_ENTITY);
+  }
   const { data, promoDoc } = await buildClassData(payload, userId);
   const created = await classRepository.create(data);
   // Tăng số lượt đã dùng của mã sau khi tạo lớp thành công
@@ -221,90 +231,120 @@ const createClass = async (payload, userId) => {
   return await maskClassItem(created, { id: userId });
 };
 
-const normalizeSubjectFilter = (subject) => {
+const normalizeSubjectFilter = (subject, names = []) => {
   if (!subject) return "";
   const normalized = subject.trim().toLowerCase();
-  const matchedSubject = SUBJECTS.find((item) => item.toLowerCase() === normalized);
+  const matchedSubject = names.find((item) => item.toLowerCase() === normalized);
   return matchedSubject || subject.trim();
 };
 
 const getClasses = async (query, user) => {
   const filters = {};
-  if (query.subject) filters.subject = normalizeSubjectFilter(query.subject);
+  if (query.subject) {
+    const activeNames = await subjectService.getActiveSubjectNames();
+    filters.subject = normalizeSubjectFilter(query.subject, activeNames);
+  }
   if (query.provinceCode) filters.provinceCode = query.provinceCode;
   if (query.districtCode) filters.districtCode = query.districtCode;
 
   const page = query.page || 1;
   const limit = query.limit || 6;
-  const { classes, totalItems } = await classRepository.findMany(filters, { page, limit });
-  const totalPages = Math.max(1, Math.ceil(totalItems / limit));
+  // Ẩn các lớp đã có gia sư nhận (đơn pending/approved/cancel_requested) khỏi danh sách công khai,
+  // đồng bộ với feed "Lớp mới theo môn" — tránh nhiều gia sư cùng nhận một lớp.
+  const excludeIds = await classApplicationRepository.distinctActiveClassIds();
+  const { classes, totalItems } = await classRepository.findMany(filters, { page, limit, excludeIds });
 
   const maskedClasses = await maskClassItem(classes, user);
   return {
     classes: maskedClasses,
-    pagination: {
-      page,
-      limit,
-      totalItems,
-      totalPages,
-      hasNextPage: page < totalPages,
-      hasPrevPage: page > 1,
-    },
+    pagination: buildPagination({ page, limit, totalItems }),
   };
 };
 
 const FEED_NEW_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 giờ
 
-// Feed bài đăng tuyển gia sư theo đúng môn mà gia sư đăng ký dạy.
-// Dùng truy vấn theo subject ($in tutor.subjects) thay vì tạo thông báo cho từng
-// gia sư — đảm bảo mở rộng tốt khi có hàng nghìn bài đăng cùng môn.
+// Map tình trạng nghề nghiệp của gia sư → mức trình độ mà bài đăng yêu cầu (student/teacher).
+// Bài đăng chỉ có 2 mức cụ thể (student/teacher) ngoài "any"; người đã tốt nghiệp xếp nhóm "teacher".
+const OCCUPATION_TO_LEVEL = {
+  [OCCUPATION_STATUS.STUDENT]: "student",
+  [OCCUPATION_STATUS.GRADUATED]: "teacher",
+  [OCCUPATION_STATUS.TEACHER]: "teacher",
+};
+
+// Tính các tiêu chí cá nhân hóa của gia sư để lọc feed:
+// - Giới tính: gia sư nam/nữ → khớp bài yêu cầu đúng giới đó + bài không yêu cầu giới;
+//   gia sư không khai giới tính (hoặc "other") → chỉ khớp bài không yêu cầu giới.
+// - Trình độ: theo occupationStatus → khớp bài yêu cầu đúng mức + bài không yêu cầu trình độ.
+// - Khu vực: chỉ bài đăng có tỉnh/thành trùng khu vực dạy của gia sư.
+const buildTutorFeedCriteria = (tutor, user) => {
+  const gender = user?.gender;
+  const genderPrefs = gender === "male" || gender === "female" ? [gender, "any"] : ["any"];
+
+  const level = OCCUPATION_TO_LEVEL[tutor?.occupationStatus] || null;
+  const levelPrefs = level ? [level, "any"] : ["any"];
+
+  const provinceCode = tutor?.teachingAreas?.province ?? null;
+
+  return { genderPrefs, levelPrefs, provinceCode, gender: gender || null, level };
+};
+
+// Feed bài đăng tuyển gia sư, cá nhân hóa theo hồ sơ gia sư:
+// môn đăng ký dạy + giới tính + trình độ + khu vực dạy.
+// Dùng truy vấn lọc trực tiếp (thay vì tạo thông báo cho từng gia sư) để mở rộng tốt.
 const getClassFeedForTutor = async (userId, query = {}) => {
-  const tutor = await tutorRepository.findByUserId(userId);
+  const [tutor, user] = await Promise.all([
+    tutorRepository.findByUserId(userId),
+    userRepository.findById(userId),
+  ]);
   if (!tutor) throw new AppError(MESSAGE.TUTOR_NOT_FOUND, HTTP_STATUS.NOT_FOUND);
 
   const subjects = Array.isArray(tutor.subjects) ? tutor.subjects : [];
   const page = Number(query.page) || 1;
   const limit = Number(query.limit) || 10;
 
-  const emptyPagination = {
-    page,
-    limit,
-    totalItems: 0,
-    totalPages: 1,
-    hasNextPage: false,
-    hasPrevPage: false,
+  const { genderPrefs, levelPrefs, provinceCode, gender, level } = buildTutorFeedCriteria(tutor, user);
+
+  // Thông tin cá nhân hóa để FE hiển thị (tỉnh dạy, giới tính, trình độ đã dùng để lọc)
+  const province = provinceCode != null ? await locationRepository.findProvinceByCode(provinceCode) : null;
+  const personalization = {
+    gender,
+    level,
+    provinceCode,
+    provinceName: province?.name || null,
   };
 
+  const emptyPagination = buildPagination({ page, limit, totalItems: 0 });
+
   if (subjects.length === 0) {
-    return { classes: [], subjects: [], newCount: 0, pagination: emptyPagination };
+    return { classes: [], subjects: [], newCount: 0, personalization, pagination: emptyPagination };
   }
 
   // Cho phép lọc theo 1 môn cụ thể, nhưng môn đó phải nằm trong các môn gia sư dạy
   const subjectFilter = query.subject && subjects.includes(query.subject) ? query.subject : null;
   const filterSubjects = subjectFilter ? [subjectFilter] : subjects;
 
-  // Ẩn các bài đăng đã có gia sư nhận (đơn pending/approved)
-  const excludeIds = await classApplicationRepository.distinctActiveClassIds();
+  const baseCriteria = { genderPrefs, levelPrefs, provinceCode };
+
+  // Ẩn các bài đã "khóa" (đã chọn/đã ghép) và các bài chính gia sư này đã ứng tuyển
+  // (để không ứng tuyển lại lớp đang chờ). Bài chỉ có ứng viên đang chờ vẫn hiển thị cho người khác.
+  const [lockedIds, myAppliedIds] = await Promise.all([
+    classApplicationRepository.distinctActiveClassIds(),
+    classApplicationRepository.distinctClassIdsByTutor(tutor._id),
+  ]);
+  const excludeIds = [...new Set([...lockedIds, ...myAppliedIds].map(String))];
   const since = new Date(Date.now() - FEED_NEW_WINDOW_MS);
   const [{ classes, totalItems }, newCount] = await Promise.all([
-    classRepository.findBySubjects(filterSubjects, { page, limit, excludeIds }),
-    classRepository.countBySubjectsSince(subjects, since, excludeIds),
+    classRepository.findByFeedCriteria({ ...baseCriteria, subjects: filterSubjects }, { page, limit, excludeIds }),
+    classRepository.countByFeedCriteriaSince({ ...baseCriteria, subjects }, since, excludeIds),
   ]);
 
-  const totalPages = Math.max(1, Math.ceil(totalItems / limit));
   const maskedClasses = await maskClassItem(classes, { id: userId, role: "tutor" });
   return {
     classes: maskedClasses,
     subjects,
     newCount,
-    pagination: {
-      page,
-      limit,
-      totalItems,
-      totalPages,
-      hasNextPage: page < totalPages,
-      hasPrevPage: page > 1,
-    },
+    personalization,
+    pagination: buildPagination({ page, limit, totalItems }),
   };
 };
 
@@ -312,20 +352,124 @@ const getMyPostedClasses = async (userId, query = {}) => {
   const page = Number(query.page) || 1;
   const limit = Number(query.limit) || 10;
   const { classes, totalItems } = await classRepository.findByCreatedBy(userId, { page, limit });
-  const totalPages = Math.max(1, Math.ceil(totalItems / limit));
 
+  // Đánh dấu bài đăng đã có đơn đang hoạt động (gồm cả ứng viên đang chờ) → FE ẩn nút sửa/xóa
+  // cho khớp với ràng buộc backend (countActiveByClassId).
+  const classIds = classes.map((c) => c._id);
+  const [activeIds, applicantCounts, approvedApps, reviewedIds] = await Promise.all([
+    classApplicationRepository
+      .distinctClassIdsWithActiveApplications()
+      .then((ids) => new Set(ids.map(String))),
+    classApplicationRepository.countActiveApplicantsByClassIds(classIds),
+    // Gia sư đã được admin duyệt cho từng bài đăng (lớp đã ghép) → hiển thị trong "Bài đăng của tôi"
+    classApplicationRepository.findApprovedByClassIds(classIds),
+    // Các lớp người đăng đã đánh giá gia sư → ẩn nút "Đánh giá gia sư"
+    reviewRepository.findReviewedClassIds(userId, classIds).then((ids) => new Set(ids.map(String))),
+  ]);
+  // Map { classId: thông tin gia sư đã ghép (kèm SĐT) } để gắn vào từng bài đăng
+  const matchedTutorByClassId = approvedApps.reduce((acc, app) => {
+    const tutor = ClassApplicationMapper.toMatchedTutorDTO(app);
+    if (tutor) acc[String(app.classId)] = tutor;
+    return acc;
+  }, {});
   const maskedClasses = await maskClassItem(classes, { id: userId });
+  maskedClasses.forEach((item) => {
+    if (item) {
+      item.hasActiveApplications = activeIds.has(String(item.id));
+      // Số gia sư đang ứng tuyển (chờ chọn / đã chọn) → cho nút "Gia sư ứng tuyển (N)"
+      item.applicantCount = applicantCounts[String(item.id)] || 0;
+      // Gia sư đã được admin duyệt nhận lớp (null nếu lớp chưa ghép)
+      item.matchedTutor = matchedTutorByClassId[String(item.id)] || null;
+      // Người đăng đã đánh giá gia sư của lớp này chưa (chỉ ý nghĩa khi lớp đã hoàn thành)
+      item.reviewed = reviewedIds.has(String(item.id));
+    }
+  });
   return {
     classes: maskedClasses,
-    pagination: {
-      page,
-      limit,
-      totalItems,
-      totalPages,
-      hasNextPage: page < totalPages,
-      hasPrevPage: page > 1,
-    },
+    pagination: buildPagination({ page, limit, totalItems }),
   };
+};
+
+// Chủ bài đăng sửa bài của mình — chỉ khi đang mở và chưa có gia sư ứng tuyển.
+const updatePostedClass = async (classId, userId, payload) => {
+  const classItem = await classRepository.findById(classId);
+  if (!classItem) throw new AppError(MESSAGE.CLASS_NOT_FOUND, HTTP_STATUS.NOT_FOUND);
+
+  const ownerId = classItem.createdBy?._id ?? classItem.createdBy;
+  if (String(ownerId) !== String(userId)) {
+    throw new AppError("Bạn không có quyền sửa bài đăng này.", HTTP_STATUS.FORBIDDEN);
+  }
+  if (classItem.status !== CLASS_STATUS.OPEN) {
+    throw new AppError("Chỉ có thể sửa bài đăng khi đang mở (chưa ghép gia sư).", HTTP_STATUS.BAD_REQUEST);
+  }
+  const activeCount = await classApplicationRepository.countActiveByClassId(classId);
+  if (activeCount > 0) {
+    throw new AppError(
+      "Không thể sửa bài đăng khi đã có gia sư ứng tuyển. Vui lòng xử lý đơn trước.",
+      HTTP_STATUS.BAD_REQUEST,
+    );
+  }
+
+  // Validate khu vực + tính lại học phí theo thông tin mới
+  const [province, district] = await Promise.all([
+    locationRepository.findProvinceByCode(payload.provinceCode),
+    locationRepository.findDistrictByCode(payload.districtCode),
+  ]);
+  if (!province || !district || district.provinceCode !== payload.provinceCode) {
+    throw new AppError(MESSAGE.INVALID_AREA, HTTP_STATUS.BAD_REQUEST);
+  }
+  const configDoc = await loadPricingConfigDoc();
+  ensurePricingInputValid(payload, configDoc);
+  const pricing = calculateFee(payload, configDoc);
+
+  // Giữ nguyên mã ưu đãi ban đầu (không cho đổi khi sửa); tính lại số tiền giảm theo học phí mới
+  let promoDiscount = 0;
+  let finalFeePerMonth = pricing.feePerMonth;
+  const promoCode = classItem.promoCode || null;
+  if (promoCode) {
+    const promo = await promoRepository.findByCode(promoCode);
+    if (promo) {
+      promoDiscount = promoService.computeDiscount(promo, pricing.feePerMonth);
+      finalFeePerMonth = Math.max(0, pricing.feePerMonth - promoDiscount);
+    }
+  }
+
+  const editable = { ...payload };
+  delete editable.promoCode; // không cho sửa mã ưu đãi qua chức năng sửa bài
+
+  const data = {
+    ...editable,
+    provinceName: province.name,
+    districtName: district.name,
+    ...pricing,
+    promoCode,
+    promoDiscount,
+    finalFeePerMonth,
+  };
+  const updated = await classRepository.update(classId, data);
+  return await maskClassItem(updated, { id: userId });
+};
+
+// Chủ bài đăng xóa VĨNH VIỄN bài của mình — chỉ khi chưa có đơn nào đang hoạt động.
+const deletePostedClass = async (classId, userId) => {
+  const classItem = await classRepository.findById(classId);
+  if (!classItem) throw new AppError(MESSAGE.CLASS_NOT_FOUND, HTTP_STATUS.NOT_FOUND);
+
+  const ownerId = classItem.createdBy?._id ?? classItem.createdBy;
+  if (String(ownerId) !== String(userId)) {
+    throw new AppError("Bạn không có quyền xóa bài đăng này.", HTTP_STATUS.FORBIDDEN);
+  }
+  const activeCount = await classApplicationRepository.countActiveByClassId(classId);
+  if (activeCount > 0) {
+    throw new AppError(
+      "Không thể xóa bài đăng khi đã có gia sư ứng tuyển hoặc nhận lớp. Vui lòng liên hệ admin nếu cần.",
+      HTTP_STATUS.BAD_REQUEST,
+    );
+  }
+  // Xóa hẳn khỏi DB kèm các đơn nhận lớp liên quan (không đưa vào thùng rác)
+  await classApplicationRepository.deleteByClassId(classId);
+  await classRepository.hardDelete(classId);
+  return { id: classId };
 };
 
 const getClassById = async (id, user) => {
@@ -333,11 +477,78 @@ const getClassById = async (id, user) => {
   if (!classItem) {
     throw new AppError(MESSAGE.CLASS_NOT_FOUND, HTTP_STATUS.NOT_FOUND);
   }
-  return await maskClassItem(classItem, user);
+  const dto = await maskClassItem(classItem, user);
+
+  // Người đăng (chủ bài) hoặc admin xem bài đã ghép → kèm thông tin + SĐT gia sư đã nhận lớp.
+  // Người khác (khách, gia sư) không thấy để tránh lộ liên hệ riêng tư của gia sư.
+  if (dto) {
+    const createdById = classItem.createdBy?._id || classItem.createdBy;
+    const isOwner = user && createdById && String(createdById) === String(user.id);
+    const isAdmin = user?.role === "admin";
+    if (isOwner || isAdmin) {
+      const approvedApp = await classApplicationRepository.findApprovedByClassId(classItem._id);
+      dto.matchedTutor = approvedApp ? ClassApplicationMapper.toMatchedTutorDTO(approvedApp) : null;
+    }
+  }
+  return dto;
+};
+
+// Người đăng / gia sư xác nhận đã hoàn thành lớp. Khi CẢ HAI xác nhận → lớp completed + tặng mã cho cả hai.
+const confirmClassCompletion = async (userId, classId) => {
+  const classItem = await classRepository.findById(classId);
+  if (!classItem) throw new AppError(MESSAGE.CLASS_NOT_FOUND, HTTP_STATUS.NOT_FOUND);
+  if (classItem.status !== CLASS_STATUS.MATCHED) {
+    throw new AppError("Chỉ lớp đã có gia sư nhận mới có thể xác nhận hoàn thành.", HTTP_STATUS.BAD_REQUEST);
+  }
+
+  const isPoster = String(classItem.createdBy) === String(userId);
+  let approvedApp = null;
+  let isTutor = false;
+  if (!isPoster) {
+    approvedApp = await classApplicationRepository.findApprovedByClassId(classId);
+    const tutorUserId = approvedApp?.tutorId?.userId?._id ?? approvedApp?.tutorId?.userId;
+    isTutor = Boolean(approvedApp) && String(tutorUserId) === String(userId);
+  }
+  if (!isPoster && !isTutor) {
+    throw new AppError("Bạn không có quyền xác nhận hoàn thành lớp này.", HTTP_STATUS.FORBIDDEN);
+  }
+
+  const completedByPoster = Boolean(classItem.completedByPoster) || isPoster;
+  const completedByTutor = Boolean(classItem.completedByTutor) || isTutor;
+  const bothConfirmed = completedByPoster && completedByTutor;
+
+  const update = { completedByPoster, completedByTutor };
+  if (bothConfirmed) {
+    update.status = CLASS_STATUS.COMPLETED;
+    update.completedAt = new Date();
+  }
+  const updated = await classRepository.update(classId, update);
+
+  if (bothConfirmed) {
+    if (!approvedApp) approvedApp = await classApplicationRepository.findApprovedByClassId(classId);
+    const tutorUserId = approvedApp?.tutorId?.userId?._id ?? approvedApp?.tutorId?.userId;
+    const recipients = [classItem.createdBy, tutorUserId].filter(Boolean);
+
+    await Promise.all(
+      recipients.map(async (recipientId) => {
+        const voucher = await promoService.generateRewardVoucher(recipientId, {
+          classCode: classItem.classCode,
+        });
+        const expiry = new Date(voucher.expiresAt).toLocaleDateString("vi-VN");
+        return notificationService.createNotification({
+          userId: recipientId,
+          type: NOTIFICATION_TYPES.CLASS_COMPLETED_REWARD,
+          message: `Lớp ${classItem.classCode} (Môn: ${classItem.subject}) đã hoàn thành! Bạn nhận được mã giảm giá ${voucher.code} (giảm 10%, tối đa 200.000đ), hạn dùng đến ${expiry}. Xem trong "Kho mã giảm giá".`,
+        });
+      })
+    );
+  }
+
+  return maskClassItem(updated, { id: userId });
 };
 
 const getSubjects = async () => {
-  return SUBJECTS;
+  return await subjectService.getActiveSubjectNames();
 };
 
 const getPricingConfig = async () => {
@@ -352,6 +563,9 @@ module.exports = {
   getClassFeedForTutor,
   getMyPostedClasses,
   getClassById,
+  updatePostedClass,
+  deletePostedClass,
+  confirmClassCompletion,
   getSubjects,
   getPricingConfig,
   clearPricingConfigCache,

@@ -4,6 +4,12 @@ const router = express.Router();
 const authMiddleware = require("../middlewares/auth.middleware");
 const roleMiddleware = require("../middlewares/role.middleware");
 const adminController = require("../controllers/admin.controller");
+const reviewController = require("../controllers/review.controller");
+const {
+  validateQuery: validateReviewQuery,
+  adminListReviewTutorsQuerySchema,
+  adminListTutorReviewsQuerySchema,
+} = require("../validations/review.validation");
 const {
   validate,
   validateQuery,
@@ -15,6 +21,11 @@ const {
   adminListClassApplicationsQuerySchema,
   adminListClassesQuerySchema,
   adminTrashListQuerySchema,
+  adminListProfileChangesQuerySchema,
+  rejectProfileChangeSchema,
+  adminListCancellationsQuerySchema,
+  rejectCancellationSchema,
+  adminListPendingTutorsQuerySchema,
 } = require("../validations/admin.validation");
 
 // Áp dụng auth + admin role check cho tất cả admin routes
@@ -39,7 +50,7 @@ router.delete("/trash/:type/:id", adminController.purgeTrashItem);
 
 // ──────────────────────────── Tutor routes (/admin/tutors) ────────────────────────────
 router.get("/tutors/stats", adminController.getDashboardStats);
-router.get("/tutors/pending", adminController.getPendingTutors);
+router.get("/tutors/pending", validateQuery(adminListPendingTutorsQuerySchema), adminController.getPendingTutors);
 router.patch("/tutors/:id/approve", adminController.approveTutor);
 router.patch("/tutors/:id/reject", validate(rejectTutorSchema), adminController.rejectTutor);
 
@@ -48,5 +59,20 @@ router.get("/class-applications/stats", adminController.getClassApplicationStats
 router.get("/class-applications", validateQuery(adminListClassApplicationsQuerySchema), adminController.getClassApplications);
 router.patch("/class-applications/:id/approve", adminController.approveClassApplication);
 router.patch("/class-applications/:id/reject", validate(rejectClassApplicationSchema), adminController.rejectClassApplication);
+
+// ──────────────────────────── Application cancellation routes (/admin/application-cancellations) — gia sư hủy đơn ────────────────────────────
+router.get("/application-cancellations", validateQuery(adminListCancellationsQuerySchema), adminController.getApplicationCancellations);
+router.patch("/application-cancellations/:id/approve", adminController.approveCancellation);
+router.patch("/application-cancellations/:id/reject", validate(rejectCancellationSchema), adminController.rejectCancellation);
+
+// ──────────────────────────── Review routes (/admin/reviews) — quản lý đánh giá gia sư ────────────────────────────
+router.get("/reviews/tutors", validateReviewQuery(adminListReviewTutorsQuerySchema), reviewController.getAdminReviewTutors);
+router.get("/reviews/tutors/:tutorId", validateReviewQuery(adminListTutorReviewsQuerySchema), reviewController.getAdminTutorReviews);
+router.delete("/reviews/:id", reviewController.softDeleteReview);
+
+// ──────────────────────────── Profile change routes (/admin/profile-changes) — gia sư đổi hồ sơ ────────────────────────────
+router.get("/profile-changes", validateQuery(adminListProfileChangesQuerySchema), adminController.getProfileChanges);
+router.patch("/profile-changes/:id/approve", adminController.approveProfileChange);
+router.patch("/profile-changes/:id/reject", validate(rejectProfileChangeSchema), adminController.rejectProfileChange);
 
 module.exports = router;

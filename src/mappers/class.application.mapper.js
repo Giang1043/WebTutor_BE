@@ -12,15 +12,20 @@ class ClassApplicationMapper {
       id: application._id,
       status: application.status,
       rejectionReason: application.rejectionReason ?? null,
+      cancellationReason: application.cancellationReason ?? null,
       createdAt: application.createdAt,
       updatedAt: application.updatedAt,
       classItem: {
         id: classItem._id,
         classCode: classItem.classCode,
         subject: classItem.subject,
+        summary: classItem.summary,
         locationLabel: classItem.locationLabel,
         feePerSession: classItem.feePerSession,
         feePerMonth: classItem.feePerMonth,
+        finalFeePerMonth: classItem.finalFeePerMonth ?? classItem.feePerMonth,
+        promoCode: classItem.promoCode ?? null,
+        promoDiscount: classItem.promoDiscount ?? 0,
         sessionsPerWeek: classItem.sessionsPerWeek,
         minutesPerSession: classItem.minutesPerSession,
         contactPhone: classItem.contactPhone,
@@ -35,6 +40,8 @@ class ClassApplicationMapper {
         districtCode: classItem.districtCode,
         provinceName: classItem.provinceName,
         districtName: classItem.districtName,
+        status: classItem.status || "open",
+        createdAt: classItem.createdAt,
       },
       tutor: {
         id: tutor._id,
@@ -49,6 +56,7 @@ class ClassApplicationMapper {
         graduationYear: tutor.graduationYear ?? null,
         bio: tutor.bio ?? null,
         availability: tutor.availability ?? [],
+        totalClassesAccepted: tutor.totalClassesAccepted ?? 0,
       },
     };
   }
@@ -56,6 +64,63 @@ class ClassApplicationMapper {
   static toDTOs(applications) {
     if (!Array.isArray(applications)) return [];
     return applications.map((a) => this.toDTO(a));
+  }
+
+  /**
+   * DTO gọn cho người đăng xem & chọn gia sư ứng tuyển.
+   * Chỉ gồm thông tin gia sư cần để quyết định (không lộ thông tin riêng tư của lớp).
+   */
+  static toApplicantDTO(application) {
+    if (!application) return null;
+    const tutor = application.tutorId || {};
+    const tutorUser = tutor.userId || {};
+
+    return {
+      id: application._id,
+      status: application.status,
+      createdAt: application.createdAt,
+      tutor: {
+        id: tutor._id,
+        fullName: tutorUser.fullName ?? null,
+        avatar: tutorUser.avatar ?? null,
+        gender: tutorUser.gender ?? null,
+        subjects: tutor.subjects ?? [],
+        occupationStatus: tutor.occupationStatus ?? null,
+        schoolName: tutor.schoolName ?? null,
+        graduationYear: tutor.graduationYear ?? null,
+        bio: tutor.bio ?? null,
+        totalClassesAccepted: tutor.totalClassesAccepted ?? 0,
+      },
+    };
+  }
+
+  static toApplicantDTOs(applications) {
+    if (!Array.isArray(applications)) return [];
+    return applications.map((a) => this.toApplicantDTO(a));
+  }
+
+  /**
+   * DTO thông tin gia sư đã được admin duyệt nhận lớp — KÈM số điện thoại liên hệ.
+   * Chỉ dùng cho người đăng (chủ bài) / admin xem trong "Bài đăng của tôi" và chi tiết
+   * bài đã ghép; KHÔNG dùng ở danh sách ứng tuyển (để không lộ SĐT trước khi được duyệt).
+   */
+  static toMatchedTutorDTO(application) {
+    if (!application) return null;
+    const tutor = application.tutorId || {};
+    const tutorUser = tutor.userId || {};
+
+    return {
+      id: tutor._id,
+      fullName: tutorUser.fullName ?? null,
+      avatar: tutorUser.avatar ?? null,
+      gender: tutorUser.gender ?? null,
+      phone: tutor.phone ?? null,
+      subjects: tutor.subjects ?? [],
+      occupationStatus: tutor.occupationStatus ?? null,
+      schoolName: tutor.schoolName ?? null,
+      graduationYear: tutor.graduationYear ?? null,
+      totalClassesAccepted: tutor.totalClassesAccepted ?? 0,
+    };
   }
 
   /**
@@ -89,6 +154,9 @@ class ClassApplicationMapper {
       tutorLevelPref: classItem.tutorLevelPref,
       provinceName: classItem.provinceName,
       districtName: classItem.districtName,
+      status: classItem.status || "open",
+      completedByPoster: Boolean(classItem.completedByPoster),
+      completedByTutor: Boolean(classItem.completedByTutor),
       createdAt: classItem.createdAt,
     };
 
@@ -107,6 +175,7 @@ class ClassApplicationMapper {
       id: application._id,
       status: application.status,
       rejectionReason: application.rejectionReason ?? null,
+      cancellationReason: application.cancellationReason ?? null,
       isUnlocked,
       createdAt: application.createdAt,
       updatedAt: application.updatedAt,
