@@ -1,28 +1,7 @@
 const Joi = require("joi");
 const ROLES = require("../constants/role");
-const { SUBJECTS } = require("../constants/tutor");
-
-// ──────────────────────────── Shared middleware ────────────────────────────
-
-const validate = (schema) => (req, res, next) => {
-  const { error, value } = schema.validate(req.body, { abortEarly: false, convert: true });
-  if (error) {
-    const errors = error.details.map((d) => d.message);
-    return res.status(422).json({ success: false, message: "Dữ liệu đầu vào không hợp lệ", errors });
-  }
-  req.body = value;
-  next();
-};
-
-const validateQuery = (schema) => (req, res, next) => {
-  const { error, value } = schema.validate(req.query, { abortEarly: false });
-  if (error) {
-    const errors = error.details.map((d) => d.message);
-    return res.status(422).json({ success: false, message: "Dữ liệu đầu vào không hợp lệ", errors });
-  }
-  req.query = value;
-  next();
-};
+const { PHONE_REGEX, GENDER_OPTIONS } = require("../constants/tutor");
+const { validate, validateQuery } = require("../middlewares/validate.middleware");
 
 // ──────────────────────────── User schemas ────────────────────────────
 
@@ -44,13 +23,13 @@ const adminUpdateUserSchema = Joi.object({
   }),
   phone: Joi.string()
     .trim()
-    .pattern(/^(0[3|5|7|8|9])+([0-9]{8})$/)
+    .pattern(PHONE_REGEX)
     .allow(null, "")
     .optional()
     .messages({
       "string.pattern.base": "Số điện thoại không hợp lệ (phải là số điện thoại Việt Nam 10 số)",
     }),
-  gender: Joi.string().valid("male", "female", "other").allow(null, "").optional().messages({
+  gender: Joi.string().valid(...GENDER_OPTIONS).allow(null, "").optional().messages({
     "any.only": "Giới tính không hợp lệ",
   }),
   dateOfBirth: Joi.date().max("now").allow(null, "").optional().messages({
@@ -91,7 +70,17 @@ const rejectClassApplicationSchema = Joi.object({
 });
 
 const adminListClassApplicationsQuerySchema = Joi.object({
-  status: Joi.string().valid("pending", "approved", "rejected", "all").default("pending"),
+  page: Joi.number().integer().min(1).default(1),
+  limit: Joi.number().integer().min(1).max(100).default(10),
+  // "selected" = gia sư người đăng đã chọn, đang chờ admin duyệt (hàng chờ chính của admin)
+  status: Joi.string()
+    .valid("pending", "selected", "approved", "rejected", "all")
+    .default("selected"),
+});
+
+const adminListPendingTutorsQuerySchema = Joi.object({
+  page: Joi.number().integer().min(1).default(1),
+  limit: Joi.number().integer().min(1).max(100).default(10),
 });
 
 // ──────────────────────────── Class (bài đăng) schemas ────────────────────────────
@@ -100,7 +89,7 @@ const adminListClassesQuerySchema = Joi.object({
   page: Joi.number().integer().min(1).default(1),
   limit: Joi.number().integer().min(1).max(100).default(10),
   keyword: Joi.string().trim().allow("").max(100).optional(),
-  subject: Joi.string().valid(...SUBJECTS).allow("").optional(),
+  subject: Joi.string().trim().allow("").max(100).optional(),
 });
 
 // ──────────────────────────── Trash (thùng rác) schemas ────────────────────────────
@@ -108,6 +97,36 @@ const adminListClassesQuerySchema = Joi.object({
 const adminTrashListQuerySchema = Joi.object({
   page: Joi.number().integer().min(1).default(1),
   limit: Joi.number().integer().min(1).max(100).default(10),
+});
+
+// ──────────────────────────── Profile change request schemas ────────────────────────────
+
+const adminListProfileChangesQuerySchema = Joi.object({
+  page: Joi.number().integer().min(1).default(1),
+  limit: Joi.number().integer().min(1).max(100).default(10),
+  status: Joi.string().valid("pending", "approved", "rejected", "all").default("pending"),
+});
+
+const rejectProfileChangeSchema = Joi.object({
+  rejectionReason: Joi.string().trim().min(5).max(500).required().messages({
+    "string.empty": "Lý do từ chối không được để trống",
+    "string.min": "Lý do từ chối phải có ít nhất 5 ký tự",
+    "string.max": "Lý do từ chối không được vượt quá 500 ký tự",
+    "any.required": "Lý do từ chối là bắt buộc",
+  }),
+});
+
+// ──────────────────────────── Hủy đơn nhận lớp schemas ────────────────────────────
+
+const adminListCancellationsQuerySchema = Joi.object({
+  page: Joi.number().integer().min(1).default(1),
+  limit: Joi.number().integer().min(1).max(100).default(10),
+  status: Joi.string().valid("cancel_requested", "cancelled", "all").default("cancel_requested"),
+});
+
+// Admin từ chối yêu cầu hủy — lý do không bắt buộc
+const rejectCancellationSchema = Joi.object({
+  rejectionReason: Joi.string().trim().max(500).allow("", null).optional(),
 });
 
 module.exports = {
@@ -119,6 +138,11 @@ module.exports = {
   rejectTutorSchema,
   rejectClassApplicationSchema,
   adminListClassApplicationsQuerySchema,
+  adminListPendingTutorsQuerySchema,
   adminListClassesQuerySchema,
   adminTrashListQuerySchema,
+  adminListProfileChangesQuerySchema,
+  rejectProfileChangeSchema,
+  adminListCancellationsQuerySchema,
+  rejectCancellationSchema,
 };
