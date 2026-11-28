@@ -3,7 +3,7 @@ const HTTP_STATUS = require("../constants/status");
 const MESSAGE = require("../constants/message");
 const { TUTOR_STATUS } = require("../constants/tutor");
 const ROLES = require("../constants/role");
-const { NOTIFICATION_TYPES } = require("../constants/notification");
+const { NOTIFICATION_TYPES, NOTIFICATION_AUDIENCE } = require("../constants/notification");
 const { CLASS_APPLICATION_STATUS, CLASS_APPLICATION_ORIGIN } = require("../constants/classApplication");
 const { CLASS_STATUS } = require("../constants/class");
 const classRepository = require("../repositories/class.repository");
@@ -23,6 +23,17 @@ const applyForClass = async (userId, classId) => {
   if (classItem.status && classItem.status !== CLASS_STATUS.OPEN) {
     throw new AppError(
       "Lớp này không còn nhận đăng ký (đã có gia sư hoặc đã hết hạn).",
+      HTTP_STATUS.CONFLICT,
+    );
+  }
+
+  // Người đăng đã chọn gia sư (đơn selected) hoặc lớp đang được xử lý (approved/cancel_requested)
+  // → lớp đã bị ẩn khỏi danh sách công khai. Chặn gia sư khác nhận lớp qua URL/API trực tiếp,
+  // đồng bộ với tiêu chí ẩn danh sách (LOCK_STATUSES). Lưu ý: status lớp vẫn "open" tới khi admin duyệt.
+  const lockingApplication = await classApplicationRepository.findLockingByClassId(classId);
+  if (lockingApplication) {
+    throw new AppError(
+      "Lớp này đã có gia sư được chọn hoặc đang xử lý, không thể nhận nữa.",
       HTTP_STATUS.CONFLICT,
     );
   }
@@ -192,7 +203,12 @@ const notifyAdmins = async (type, message) => {
   const admins = await userRepository.findAllByRole(ROLES.ADMIN);
   await Promise.all(
     admins.map((admin) =>
-      notificationService.createNotification({ userId: admin._id, type, message })
+      notificationService.createNotification({
+        userId: admin._id,
+        type,
+        message,
+        audience: NOTIFICATION_AUDIENCE.ADMIN,
+      })
     )
   );
 };
