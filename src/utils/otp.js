@@ -1,6 +1,7 @@
 const OTP_LENGTH = 6;
 const OTP_EXPIRES_MINUTES = 10;
 const OTP_RESEND_COOLDOWN_SECONDS = 120; // 2 phút
+const MAX_OTP_ATTEMPTS = 5; // nhập sai quá số lần này thì OTP bị vô hiệu (chống brute-force 6 chữ số)
 
 const generateOtp = () => {
   const min = Math.pow(10, OTP_LENGTH - 1);
@@ -12,10 +13,6 @@ const getOtpExpiry = () => {
   const expires = new Date();
   expires.setMinutes(expires.getMinutes() + OTP_EXPIRES_MINUTES);
   return expires;
-};
-
-const isOtpExpired = (expiresAt) => {
-  return !expiresAt || new Date() > new Date(expiresAt);
 };
 
 // createdAt là timestamp của OTP document trong DB
@@ -34,9 +31,9 @@ const getResendWaitSeconds = (createdAt) => {
 module.exports = {
   generateOtp,
   getOtpExpiry,
-  isOtpExpired,
   isResendTooSoon,
   getResendWaitSeconds,
   OTP_EXPIRES_MINUTES,
   OTP_RESEND_COOLDOWN_SECONDS,
+  MAX_OTP_ATTEMPTS,
 };

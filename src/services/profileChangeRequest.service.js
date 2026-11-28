@@ -4,7 +4,8 @@ const MESSAGE = require("../constants/message");
 const { TUTOR_STATUS } = require("../constants/tutor");
 const OCCUPATION_STATUS = require("../constants/occupationStatus");
 const ROLES = require("../constants/role");
-const { NOTIFICATION_TYPES } = require("../constants/notification");
+const { NOTIFICATION_TYPES, NOTIFICATION_AUDIENCE } = require("../constants/notification");
+const { PROFILE_CHANGE_EDITABLE_FIELDS } = require("../constants/profileChangeRequest");
 const tutorRepository = require("../repositories/tutor.repository");
 const userRepository = require("../repositories/user.repository");
 const profileChangeRequestRepository = require("../repositories/profileChangeRequest.repository");
@@ -12,24 +13,10 @@ const subjectService = require("./subject.service");
 const notificationService = require("./notification.service");
 const { ProfileChangeRequestMapper } = require("../mappers");
 
-// Các field hồ sơ gia sư được phép đổi (qua duyệt). Field khác (schoolName,
-// graduationYear, status, stats...) bị loại bỏ.
-const EDITABLE_FIELDS = [
-  "phone",
-  "occupationStatus",
-  "teachingAreas",
-  "currentArea",
-  "availability",
-  "bio",
-  "subjects",
-  "graduationYear",
-  // Hồ sơ chứng thực (bổ sung/cập nhật) — duyệt cùng luồng đổi hồ sơ
-  "cccdFrontImage",
-  "cccdBackImage",
-  "studentCardFrontImage",
-  "studentCardBackImage",
-  "certificateImages",
-];
+// Whitelist field được phép đổi dùng chung với luồng duyệt của admin
+// (`PROFILE_CHANGE_EDITABLE_FIELDS`) — đảm bảo cả khi tạo lẫn khi duyệt đều loại
+// bỏ field không còn cho phép (vd schoolName).
+const EDITABLE_FIELDS = PROFILE_CHANGE_EDITABLE_FIELDS;
 
 const DOCUMENT_FIELDS = [
   "cccdFrontImage",
@@ -76,26 +63,17 @@ const validateDocuments = (changes, tutor, nextOccupation) => {
   const merged = (field) => (changes[field] !== undefined ? changes[field] : tutor[field]);
 
   if (!merged("cccdFrontImage") || !merged("cccdBackImage")) {
-    throw new AppError(
-      "Vui lòng tải đủ ảnh CCCD mặt trước và mặt sau.",
-      HTTP_STATUS.UNPROCESSABLE_ENTITY
-    );
+    throw new AppError(MESSAGE.PROFILE_CHANGE_CCCD_REQUIRED, HTTP_STATUS.UNPROCESSABLE_ENTITY);
   }
 
   if (nextOccupation === OCCUPATION_STATUS.STUDENT) {
     if (!merged("studentCardFrontImage") || !merged("studentCardBackImage")) {
-      throw new AppError(
-        "Vui lòng tải đủ ảnh thẻ sinh viên mặt trước và mặt sau.",
-        HTTP_STATUS.UNPROCESSABLE_ENTITY
-      );
+      throw new AppError(MESSAGE.PROFILE_CHANGE_STUDENT_CARD_REQUIRED, HTTP_STATUS.UNPROCESSABLE_ENTITY);
     }
   } else {
     const certs = merged("certificateImages");
     if (!Array.isArray(certs) || certs.length < 1) {
-      throw new AppError(
-        "Vui lòng tải lên ít nhất 1 ảnh bằng cấp.",
-        HTTP_STATUS.UNPROCESSABLE_ENTITY
-      );
+      throw new AppError(MESSAGE.PROFILE_CHANGE_CERTIFICATE_REQUIRED, HTTP_STATUS.UNPROCESSABLE_ENTITY);
     }
   }
 };
@@ -196,6 +174,7 @@ const requestChange = async (userId, body = {}) => {
         userId: admin._id,
         type: NOTIFICATION_TYPES.PROFILE_CHANGE_PENDING,
         message: `Gia sư ${tutorName} gửi yêu cầu đổi thông tin hồ sơ, cần được duyệt.`,
+        audience: NOTIFICATION_AUDIENCE.ADMIN,
       })
     )
   );

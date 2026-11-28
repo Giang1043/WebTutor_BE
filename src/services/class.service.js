@@ -1,6 +1,7 @@
 const AppError = require("../utils/AppError");
 const HTTP_STATUS = require("../constants/status");
 const locationRepository = require("../repositories/location.repository");
+const locationCache = require("../utils/locationCache");
 const classRepository = require("../repositories/class.repository");
 const tutorRepository = require("../repositories/tutor.repository");
 const userRepository = require("../repositories/user.repository");
@@ -27,11 +28,6 @@ const { generateUniqueCode } = require("../utils/code");
 let cachedPricingConfig = null;
 let pricingConfigCachedAt = 0;
 const PRICING_CONFIG_CACHE_MS = 60_000;
-
-const clearPricingConfigCache = () => {
-  cachedPricingConfig = null;
-  pricingConfigCachedAt = 0;
-};
 
 const loadPricingConfigDoc = async () => {
   const now = Date.now();
@@ -189,10 +185,34 @@ const checkCanViewSensitiveDetails = async (classItem, user) => {
   return false;
 };
 
+// Lớp đã bị "khóa" (người đăng đã chọn gia sư / đã ghép / đang xin hủy) đã bị ẩn khỏi danh sách
+// công khai. Chỉ người đăng, admin, hoặc gia sư đã tham gia lớp (đang có đơn) mới được mở chi tiết
+// bằng URL trực tiếp; người ngoài (khách, gia sư khác) bị chặn — coi như không tồn tại để không lộ
+// thông tin lớp đã có chủ. Lớp còn mở (chưa ai được chọn) thì ai cũng xem được như trước.
+const ensureCanViewLockedClass = async (classItem, user) => {
+  const lockingApplication = await classApplicationRepository.findLockingByClassId(classItem._id);
+  if (!lockingApplication) return;
+
+  if (user?.role === "admin") return;
+  const createdById = classItem.createdBy?._id || classItem.createdBy;
+  if (user && createdById && String(createdById) === String(user.id)) return;
+
+  if (user) {
+    const tutor = await tutorRepository.findByUserId(user.id);
+    if (tutor && (await classApplicationRepository.findByClassAndTutor(classItem._id, tutor._id))) {
+      return;
+    }
+  }
+
+  throw new AppError(MESSAGE.CLASS_NOT_FOUND, HTTP_STATUS.NOT_FOUND);
+};
+
 const maskClassItem = async (classItem, user) => {
   const isArray = Array.isArray(classItem);
   const items = isArray ? classItem : [classItem];
   const maskedList = [];
+
+  await locationCache.ensureLoaded(); // nạp 1 lần cho cả list; fallback bên dưới đọc từ RAM
 
   for (const item of items) {
     const dto = ClassMapper.toDTO(item);
@@ -201,14 +221,10 @@ const maskClassItem = async (classItem, user) => {
       continue;
     }
 
-    // Dynamic fallback for provinceName and districtName for older documents
+    // Fallback tên tỉnh/huyện cho document cũ (chưa denormalize) — đọc từ cache, không query.
     if (!dto.provinceName || !dto.districtName) {
-      const [prov, dist] = await Promise.all([
-        locationRepository.findProvinceByCode(dto.provinceCode),
-        locationRepository.findDistrictByCode(dto.districtCode),
-      ]);
-      dto.provinceName = prov?.name || "";
-      dto.districtName = dist?.name || "";
+      dto.provinceName = locationCache.getProvince(dto.provinceCode)?.name || "";
+      dto.districtName = locationCache.getDistrict(dto.districtCode)?.name || "";
     }
 
     const canView = await checkCanViewSensitiveDetails(item, user);
@@ -330,8 +346,9 @@ const getClasses = async (query, user) => {
 
   const page = query.page || 1;
   const limit = query.limit || 6;
-  // Ẩn các lớp đã có gia sư nhận (đơn pending/approved/cancel_requested) khỏi danh sách công khai,
-  // đồng bộ với feed "Lớp mới theo môn" — tránh nhiều gia sư cùng nhận một lớp.
+  // Ẩn các lớp đã "khóa" (đơn selected/approved/cancel_requested — người đăng đã chọn gia sư,
+  // đã ghép, hoặc đang xin hủy) khỏi danh sách công khai, đồng bộ với feed "Lớp mới theo môn".
+  // Lưu ý: đơn pending (mới ứng tuyển, chưa được chọn) KHÔNG khóa — lớp vẫn hiển thị để nhận thêm.
   const excludeIds = await classApplicationRepository.distinctActiveClassIds();
   const { classes, totalItems } = await classRepository.findMany(filters, { page, limit, excludeIds });
 
@@ -488,17 +505,14 @@ const updatePostedClass = async (classId, userId, payload) => {
 
   const ownerId = classItem.createdBy?._id ?? classItem.createdBy;
   if (String(ownerId) !== String(userId)) {
-    throw new AppError("Bạn không có quyền sửa bài đăng này.", HTTP_STATUS.FORBIDDEN);
+    throw new AppError(MESSAGE.CLASS_EDIT_FORBIDDEN, HTTP_STATUS.FORBIDDEN);
   }
   if (classItem.status !== CLASS_STATUS.OPEN) {
-    throw new AppError("Chỉ có thể sửa bài đăng khi đang mở (chưa ghép gia sư).", HTTP_STATUS.BAD_REQUEST);
+    throw new AppError(MESSAGE.CLASS_EDIT_ONLY_OPEN, HTTP_STATUS.BAD_REQUEST);
   }
   const activeCount = await classApplicationRepository.countActiveByClassId(classId);
   if (activeCount > 0) {
-    throw new AppError(
-      "Không thể sửa bài đăng khi đã có gia sư ứng tuyển. Vui lòng xử lý đơn trước.",
-      HTTP_STATUS.BAD_REQUEST,
-    );
+    throw new AppError(MESSAGE.CLASS_EDIT_HAS_APPLICANTS, HTTP_STATUS.BAD_REQUEST);
   }
 
   // Validate khu vực + tính lại học phí theo thông tin mới
@@ -548,14 +562,11 @@ const deletePostedClass = async (classId, userId) => {
 
   const ownerId = classItem.createdBy?._id ?? classItem.createdBy;
   if (String(ownerId) !== String(userId)) {
-    throw new AppError("Bạn không có quyền xóa bài đăng này.", HTTP_STATUS.FORBIDDEN);
+    throw new AppError(MESSAGE.CLASS_DELETE_FORBIDDEN, HTTP_STATUS.FORBIDDEN);
   }
   const activeCount = await classApplicationRepository.countActiveByClassId(classId);
   if (activeCount > 0) {
-    throw new AppError(
-      "Không thể xóa bài đăng khi đã có gia sư ứng tuyển hoặc nhận lớp. Vui lòng liên hệ admin nếu cần.",
-      HTTP_STATUS.BAD_REQUEST,
-    );
+    throw new AppError(MESSAGE.CLASS_DELETE_HAS_APPLICANTS, HTTP_STATUS.BAD_REQUEST);
   }
   // Xóa hẳn khỏi DB kèm các đơn nhận lớp liên quan (không đưa vào thùng rác)
   await classApplicationRepository.deleteByClassId(classId);
@@ -568,6 +579,8 @@ const getClassById = async (id, user) => {
   if (!classItem) {
     throw new AppError(MESSAGE.CLASS_NOT_FOUND, HTTP_STATUS.NOT_FOUND);
   }
+  // Lớp đã có gia sư được chọn/ghép → chặn người ngoài mở chi tiết bằng URL trực tiếp
+  await ensureCanViewLockedClass(classItem, user);
   const dto = await maskClassItem(classItem, user);
 
   // Người đăng (chủ bài) hoặc admin xem bài đã ghép → kèm thông tin + SĐT gia sư đã nhận lớp.
@@ -589,7 +602,7 @@ const confirmClassCompletion = async (userId, classId) => {
   const classItem = await classRepository.findById(classId);
   if (!classItem) throw new AppError(MESSAGE.CLASS_NOT_FOUND, HTTP_STATUS.NOT_FOUND);
   if (classItem.status !== CLASS_STATUS.MATCHED) {
-    throw new AppError("Chỉ lớp đã có gia sư nhận mới có thể xác nhận hoàn thành.", HTTP_STATUS.BAD_REQUEST);
+    throw new AppError(MESSAGE.CLASS_COMPLETE_ONLY_MATCHED, HTTP_STATUS.BAD_REQUEST);
   }
 
   const isPoster = String(classItem.createdBy) === String(userId);
@@ -601,7 +614,7 @@ const confirmClassCompletion = async (userId, classId) => {
     isTutor = Boolean(approvedApp) && String(tutorUserId) === String(userId);
   }
   if (!isPoster && !isTutor) {
-    throw new AppError("Bạn không có quyền xác nhận hoàn thành lớp này.", HTTP_STATUS.FORBIDDEN);
+    throw new AppError(MESSAGE.CLASS_COMPLETE_FORBIDDEN, HTTP_STATUS.FORBIDDEN);
   }
 
   const completedByPoster = Boolean(classItem.completedByPoster) || isPoster;
@@ -660,5 +673,4 @@ module.exports = {
   confirmClassCompletion,
   getSubjects,
   getPricingConfig,
-  clearPricingConfigCache,
 };

@@ -3,7 +3,7 @@ const HTTP_STATUS = require("../constants/status");
 const MESSAGE = require("../constants/message");
 const { TUTOR_STATUS } = require("../constants/tutor");
 const ROLES = require("../constants/role");
-const { NOTIFICATION_TYPES } = require("../constants/notification");
+const { NOTIFICATION_TYPES, NOTIFICATION_AUDIENCE } = require("../constants/notification");
 const { CLASS_APPLICATION_STATUS, CLASS_APPLICATION_ORIGIN } = require("../constants/classApplication");
 const { CLASS_STATUS } = require("../constants/class");
 const classRepository = require("../repositories/class.repository");
@@ -21,10 +21,15 @@ const applyForClass = async (userId, classId) => {
 
   // Lớp đã có gia sư nhận hoặc đã hết hạn thì không cho nhận nữa
   if (classItem.status && classItem.status !== CLASS_STATUS.OPEN) {
-    throw new AppError(
-      "Lớp này không còn nhận đăng ký (đã có gia sư hoặc đã hết hạn).",
-      HTTP_STATUS.CONFLICT,
-    );
+    throw new AppError(MESSAGE.CLASS_APPLICATION_CLASS_CLOSED, HTTP_STATUS.CONFLICT);
+  }
+
+  // Người đăng đã chọn gia sư (đơn selected) hoặc lớp đang được xử lý (approved/cancel_requested)
+  // → lớp đã bị ẩn khỏi danh sách công khai. Chặn gia sư khác nhận lớp qua URL/API trực tiếp,
+  // đồng bộ với tiêu chí ẩn danh sách (LOCK_STATUSES). Lưu ý: status lớp vẫn "open" tới khi admin duyệt.
+  const lockingApplication = await classApplicationRepository.findLockingByClassId(classId);
+  if (lockingApplication) {
+    throw new AppError(MESSAGE.CLASS_APPLICATION_CLASS_TAKEN, HTTP_STATUS.CONFLICT);
   }
 
   // Không cho phép nhận lớp do chính mình đăng
@@ -36,15 +41,12 @@ const applyForClass = async (userId, classId) => {
   if (!tutor) throw new AppError(MESSAGE.TUTOR_NOT_FOUND, HTTP_STATUS.NOT_FOUND);
 
   if (tutor.status !== TUTOR_STATUS.APPROVED) {
-    throw new AppError("Hồ sơ gia sư của bạn chưa được phê duyệt", HTTP_STATUS.FORBIDDEN);
+    throw new AppError(MESSAGE.TUTOR_NOT_APPROVED, HTTP_STATUS.FORBIDDEN);
   }
 
   // Bắt buộc có hồ sơ chứng thực đầy đủ (CCCD + thẻ sinh viên/bằng cấp) trước khi nhận lớp
   if (!tutorService.hasCompleteDocuments(tutor)) {
-    throw new AppError(
-      "Bạn cần bổ sung ảnh CCCD và thẻ sinh viên/bằng cấp trong hồ sơ trước khi nhận lớp.",
-      HTTP_STATUS.UNPROCESSABLE_ENTITY,
-    );
+    throw new AppError(MESSAGE.CLASS_APPLICATION_DOCS_REQUIRED, HTTP_STATUS.UNPROCESSABLE_ENTITY);
   }
 
   if (!tutor.subjects.includes(classItem.subject)) {
@@ -192,7 +194,12 @@ const notifyAdmins = async (type, message) => {
   const admins = await userRepository.findAllByRole(ROLES.ADMIN);
   await Promise.all(
     admins.map((admin) =>
-      notificationService.createNotification({ userId: admin._id, type, message })
+      notificationService.createNotification({
+        userId: admin._id,
+        type,
+        message,
+        audience: NOTIFICATION_AUDIENCE.ADMIN,
+      })
     )
   );
 };

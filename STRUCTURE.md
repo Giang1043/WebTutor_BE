@@ -1,12 +1,12 @@
 # Cấu trúc thư mục - Backend (WebTutorCenter_BE)
 
-> **Stack:** Node.js, Express, MongoDB, Mongoose, JWT, Joi, bcryptjs, Nodemailer, Google Auth Library, Cloudinary, Multer, morgan, cookie-parser.
+> **Stack:** Node.js, Express, MongoDB, Mongoose, JWT, Joi, bcryptjs, Nodemailer, Google Auth Library, Cloudinary, Multer, morgan, cookie-parser, axios (gọi service nội bộ), express-rate-limit.
 
 ## Tổng quan
 
 ```text
 WebTutorCenter_BE/
-├── server.js                         # Entry: dotenv, connectDB, app.listen
+├── server.js                         # Entry: dotenv, connectDB, preload locationCache, app.listen
 ├── app.js                            # Express app: CORS, morgan, JSON parser, cookieParser, /api, error handler
 ├── scripts/
 │   ├── seedLocations.js              # Fetch provinces.open-api.vn và upsert Province/District vào MongoDB
@@ -14,6 +14,7 @@ WebTutorCenter_BE/
 │   └── seedDemoData.js              # Seed dữ liệu demo users và pending tutors
 ├── src/
 │   ├── configs/
+│   │   ├── chatbot.js                # Client axios gọi chatbot-service (từ serviceClient + .env)
 │   │   ├── cloudinary.js             # Cloudinary config
 │   │   ├── cors.js                   # CORS options dùng trong app.js
 │   │   └── database.js               # Mongoose connection
@@ -34,17 +35,19 @@ WebTutorCenter_BE/
 │   │   ├── tutor.controller.js
 │   │   ├── location.controller.js
 │   │   ├── notification.controller.js
-│   │   └── class.controller.js
+│   │   ├── class.controller.js
+│   │   └── chatbot.controller.js       # Proxy hỏi–đáp sang chatbot-service (chỉ gọi service, trả data)
 │   ├── services/
 │   │   ├── auth.service.js
 │   │   ├── user.service.js
 │   │   ├── tutor.service.js          # Đăng ký/duyệt/từ chối gia sư + tạo notification
 │   │   ├── location.service.js
 │   │   ├── notification.service.js
-│   │   └── class.service.js
+│   │   ├── class.service.js
+│   │   └── chatbot.service.js          # Gọi chatbot-service qua serviceClient (axios), timeout + lỗi→503
 │   ├── mappers/
 │   │   ├── user.mapper.js            # UserMapper.toDTO — chuyển User document → DTO
-│   │   ├── tutor.mapper.js           # TutorMapper.toDTO/toDTOList — resolve area codes, cache per-request
+│   │   ├── tutor.mapper.js           # TutorMapper.toDTO/toDTOList — resolve tên tỉnh/huyện từ locationCache (RAM, không query)
 │   │   ├── notification.mapper.js    # NotificationMapper.toDTO/toDTOList
 │   │   └── class.mapper.js           # ClassMapper.toDTO/toDTOList
 │   ├── repositories/
@@ -65,7 +68,8 @@ WebTutorCenter_BE/
 │   │   ├── auth.validation.js
 │   │   ├── user.validation.js
 │   │   ├── tutor.validation.js
-│   │   └── class.validation.js
+│   │   ├── class.validation.js
+│   │   └── chatbot.validation.js       # Joi: message (bắt buộc), history, sessionId
 │   ├── routes/
 │   │   ├── index.js                  # Mount /auth, /users, /tutors, /locations, /notifications
 │   │   ├── auth.routes.js
@@ -73,16 +77,21 @@ WebTutorCenter_BE/
 │   │   ├── tutor.routes.js
 │   │   ├── location.routes.js
 │   │   ├── notification.routes.js
-│   │   └── class.routes.js
+│   │   ├── class.routes.js
+│   │   └── chatbot.routes.js           # POST / : optional auth → validate → buildChatbotRequest → controller
 │   ├── middlewares/
-│   │   ├── auth.middleware.js         # Verify JWT, gắn req.user
+│   │   ├── auth.middleware.js         # Verify JWT, gắn req.user (+ .optional cho guest)
+│   │   ├── chatbot.middleware.js      # buildChatbotRequest: bóc token + user → req.chatbotRequest
 │   │   ├── error.middleware.js        # Xử lý lỗi tập trung
+│   │   ├── rateLimit.middleware.js    # chatbotRateLimiter: giới hạn /api/chatbot theo IP (chống spam LLM), chỉ bật ở production
 │   │   └── role.middleware.js         # authorize theo role
 │   └── utils/
 │       ├── AppError.js               # Lỗi nghiệp vụ/user-facing
 │       ├── email.js                  # Gửi mail OTP
 │       ├── hash.js                   # bcrypt hash/compare
+│       ├── locationCache.js          # Cache tỉnh/huyện trong RAM (TTL 10'), bỏ N+1 resolve tên khu vực
 │       ├── otp.js                    # Tạo OTP, expiry, cooldown
+│       ├── serviceClient.js          # Client axios dùng chung gọi service nội bộ (chatbot, AI CCCD sau này)
 │       ├── response.js              # successResponse/errorResponse
 │       ├── token.js                  # JWT generate/verify
 │       └── upload.js                 # Multer + Cloudinary avatar upload/delete
@@ -147,7 +156,7 @@ Quản lý hồ sơ gia sư:
 
 ### `locations`
 
-Lưu và đọc dữ liệu tỉnh/thành, quận/huyện từ MongoDB. Dữ liệu được seed từ `provinces.open-api.vn` bằng `scripts/seedLocations.js`.
+Lưu và đọc dữ liệu tỉnh/thành, quận/huyện từ MongoDB. Dữ liệu được seed từ `provinces.open-api.vn` bằng `scripts/seedLocations.js`. Vì là dữ liệu tĩnh, tên tỉnh/huyện được resolve qua `utils/locationCache.js` (nạp toàn bộ vào RAM, TTL 10 phút) thay vì query DB theo từng mã — tránh N+1 ở danh sách gia sư/lớp. Cập nhật DB xong cache tự nạp lại trong ≤ TTL (hoặc gọi `invalidate()`).
 
 ### `notifications`
 
@@ -164,6 +173,10 @@ Quản lý lớp học mới:
 - Hệ thống tính toán học phí dự kiến dựa trên môn học, thời lượng và số lượng học sinh.
 - Lọc và tìm kiếm lớp học theo môn học, tỉnh/thành, quận/huyện.
 - Xem chi tiết lớp học.
+
+### `chatbot`
+
+**Proxy** câu hỏi người dùng sang **chatbot-service** (FastAPI riêng, xem `../chatbot-service`); BE không tự xử lý hội thoại và không có model/DB riêng. Luồng: `chatbotRateLimiter → optional auth → validate → buildChatbotRequest (bóc token + user) → controller → chatbot.service` gọi `POST {CHATBOT_URL}/api/chat` bằng axios qua client dùng chung `utils/serviceClient.js` (tái dùng cho AI-service khác như quét CCCD). Có token → forward `Authorization: Bearer` + `user{id,role}` cho câu "của tôi"; gắn `X-Internal-Secret` khi cấu hình. Chatbot lỗi/tắt/timeout → `503`, không làm sập BE. Khác module `chat` (chat người dùng ↔ admin realtime qua Socket.IO).
 
 ## API Routes
 
@@ -227,6 +240,12 @@ Quản lý lớp học mới:
 | GET | `/subjects` | - | Lấy danh sách môn học |
 | GET | `/:id` | - | Lấy chi tiết lớp học |
 
+### Chatbot - `/api/chatbot`
+
+| Method | Endpoint | Middleware | Mô tả |
+|---|---|---|---|
+| POST | `/` | chatbotRateLimiter, optional auth, validate, buildChatbotRequest | Proxy hỏi–đáp sang chatbot-service; forward JWT (nếu có) cho câu "của tôi". Rate limit mặc định 20 req/60s/IP → 429 |
+
 ## Luồng xử lý chuẩn
 
 ```text
@@ -273,3 +292,7 @@ validations/<module>.validation.js     # Joi schema nếu có request cần vali
 | `CLOUDINARY_CLOUD_NAME` | Cloudinary cloud name |
 | `CLOUDINARY_API_KEY` | Cloudinary API key |
 | `CLOUDINARY_API_SECRET` | Cloudinary API secret |
+| `CHATBOT_URL` | Gốc chatbot-service (mặc định `http://localhost:8001`) |
+| `CHATBOT_INTERNAL_SECRET` | Secret nội bộ BE ↔ chatbot; phải trùng `INTERNAL_SECRET` của chatbot-service |
+| `CHATBOT_TIMEOUT_MS` | Timeout khi gọi chatbot (mặc định `20000`) |
+| `CHATBOT_RATE_MAX` / `CHATBOT_RATE_WINDOW_MS` | Rate limit `/api/chatbot` theo IP (mặc định 20 req / 60s) |
