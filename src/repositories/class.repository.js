@@ -1,5 +1,5 @@
 const ClassModel = require("../models/class.model");
-const { CLASS_STATUS } = require("../models/class.model");
+const { CLASS_STATUS } = require("../constants/class");
 const { GENDER_OPTIONS } = require("../constants/tutor");
 
 // Các mức trình độ cụ thể mà bài đăng có thể yêu cầu (ngoài "any")
@@ -16,7 +16,8 @@ const VISIBLE_STATUS = { status: { $nin: [CLASS_STATUS.MATCHED, CLASS_STATUS.EXP
 // genderPrefs / levelPrefs là danh sách giá trị gia sư CHẤP NHẬN (luôn gồm "any").
 // Dùng $nin loại các giá trị cụ thể không khớp → bài đăng "any" hoặc thiếu field (legacy) vẫn hiện.
 const buildFeedMatchFilter = ({ subjects, genderPrefs, levelPrefs, provinceCode } = {}) => {
-  const filter = { ...NOT_DELETED, ...VISIBLE_STATUS };
+  // requestedTutorId: null → ẩn lớp mời gia sư trực tiếp khỏi feed công khai
+  const filter = { ...NOT_DELETED, ...VISIBLE_STATUS, requestedTutorId: null };
 
   if (subjects?.length) filter.subject = { $in: subjects };
   if (provinceCode != null) filter.provinceCode = provinceCode;
@@ -52,7 +53,8 @@ const findMany = async (filters = {}, options = {}) => {
   const page = options.page || 1;
   const limit = options.limit || 6;
   const skip = (page - 1) * limit;
-  const queryFilters = { ...NOT_DELETED, ...VISIBLE_STATUS, ...filters };
+  // requestedTutorId: null → ẩn lớp mời gia sư trực tiếp khỏi danh sách công khai
+  const queryFilters = { ...NOT_DELETED, ...VISIBLE_STATUS, requestedTutorId: null, ...filters };
   // Ẩn các lớp đã có đơn nhận (pending/approved/cancel_requested) — đồng bộ với feed gia sư
   if (options.excludeIds?.length) queryFilters._id = { $nin: options.excludeIds };
 
@@ -200,6 +202,17 @@ const findByCreatedBy = async (userId, options = {}) => {
   return { classes, totalItems };
 };
 
+// Lấy id tất cả bài đăng của một người dùng (KỂ CẢ đã xóa mềm) — phục vụ xóa vĩnh viễn tài khoản
+const findAllIdsByCreatedBy = async (userId) => {
+  const docs = await ClassModel.find({ createdBy: userId }).select("_id").lean();
+  return docs.map((d) => d._id);
+};
+
+// Xóa toàn bộ bài đăng của một người dùng (dùng khi xóa vĩnh viễn tài khoản)
+const deleteAllByCreatedBy = async (userId) => {
+  return await ClassModel.deleteMany({ createdBy: userId });
+};
+
 module.exports = {
   create,
   findById,
@@ -218,4 +231,6 @@ module.exports = {
   findDeleted,
   deleteById,
   hardDelete,
+  findAllIdsByCreatedBy,
+  deleteAllByCreatedBy,
 };

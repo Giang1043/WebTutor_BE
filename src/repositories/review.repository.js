@@ -67,6 +67,15 @@ const findReviewedClassIds = async (reviewerId, classIds = []) => {
   });
 };
 
+// Gia sư phản hồi đánh giá (chỉ khi chưa có phản hồi & chưa xóa mềm) — guard `reply: null`
+// đảm bảo nguyên tử để không phản hồi đúp khi có race condition. Trả null nếu không cập nhật được.
+const setReply = async (id, reply) =>
+  Review.findOneAndUpdate(
+    { _id: id, deletedAt: null, reply: null },
+    { reply },
+    { new: true }
+  );
+
 // Xóa mềm: đưa đánh giá vào thùng rác
 const softDelete = async (id, adminUserId) =>
   Review.findOneAndUpdate(
@@ -105,6 +114,12 @@ const findDeleted = async ({ page = 1, limit = 10 } = {}) => {
 const deleteById = async (id) =>
   Review.findOneAndDelete({ _id: id, deletedAt: { $ne: null } });
 
+// Xóa toàn bộ đánh giá VỀ một gia sư (xóa vĩnh viễn tài khoản gia sư)
+const deleteByTutorId = async (tutorId) => Review.deleteMany({ tutorId });
+
+// Xóa toàn bộ đánh giá DO một người dùng viết (xóa vĩnh viễn tài khoản người đăng)
+const deleteByReviewerId = async (reviewerId) => Review.deleteMany({ reviewerId });
+
 module.exports = {
   create,
   findById,
@@ -113,8 +128,11 @@ module.exports = {
   findActiveByTutorIdForAdmin,
   aggregateActiveByTutor,
   findReviewedClassIds,
+  setReply,
   softDelete,
   restore,
   findDeleted,
   deleteById,
+  deleteByTutorId,
+  deleteByReviewerId,
 };

@@ -4,7 +4,11 @@ const { TUTOR_STATUS } = require("../constants/tutor");
 
 const POPULATE_USER = "fullName email gender dateOfBirth avatar phone";
 
-const escapeRegExp = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+// Tìm kiếm khớp không dấu + không phân biệt hoa/thường (dùng chung toàn hệ thống).
+const {
+  buildDiacriticInsensitivePattern,
+  diacriticInsensitiveRegex,
+} = require("../utils/search");
 
 const findByUserId = async (userId) => {
   return await Tutor.findOne({ userId });
@@ -98,6 +102,50 @@ const findNewTutors = async (days = 7, limit = 10) => {
     .limit(limit);
 };
 
+// Top gia sư uy tín: xếp hạng bằng điểm Bayesian (IMDb) để cân bằng giữa SỐ LƯỢNG
+// đánh giá và ĐIỂM trung bình — tránh việc 1 đánh giá 5 sao vượt mặt người có nhiều
+// đánh giá điểm cao. Trả về mảng _id của top `limit` gia sư đã duyệt & có đánh giá.
+//   score = (v/(v+m))*R + (m/(v+m))*C
+//   v = reviewCount, R = averageRating, C = điểm trung bình toàn cục, m = hằng số làm mượt
+const TRUSTED_BAYESIAN_M = 5;
+
+const findTrustedTutorIds = async (limit = 10) => {
+  const baseMatch = { status: TUTOR_STATUS.APPROVED, reviewCount: { $gte: 1 } };
+
+  // C = tổng số sao / tổng lượt đánh giá trên toàn bộ gia sư đã duyệt có đánh giá.
+  const [global] = await Tutor.aggregate([
+    { $match: baseMatch },
+    { $group: { _id: null, sumRating: { $sum: "$ratingSum" }, sumCount: { $sum: "$reviewCount" } } },
+  ]);
+  if (!global || !global.sumCount) return [];
+  const C = global.sumRating / global.sumCount;
+  const m = TRUSTED_BAYESIAN_M;
+
+  const docs = await Tutor.aggregate([
+    { $match: baseMatch },
+    {
+      $addFields: {
+        _trustScore: {
+          $add: [
+            {
+              $multiply: [
+                { $divide: ["$reviewCount", { $add: ["$reviewCount", m] }] },
+                "$averageRating",
+              ],
+            },
+            { $multiply: [{ $divide: [m, { $add: ["$reviewCount", m] }] }, C] },
+          ],
+        },
+      },
+    },
+    { $sort: { _trustScore: -1, reviewCount: -1, averageRating: -1, createdAt: -1 } },
+    { $limit: limit },
+    { $project: { _id: 1 } },
+  ]);
+
+  return docs.map((d) => d._id);
+};
+
 // Tìm kiếm & lọc gia sư đã duyệt.
 // Toàn bộ điều kiện lọc (kể cả dữ liệu nằm ở User: tên, giới tính, năm sinh) đều được
 // áp dụng ở tầng DB qua aggregation TRƯỚC khi phân trang & đếm tổng → kết quả và số
@@ -110,8 +158,8 @@ const searchTutors = async (filters = {}, page = 1, limit = 20) => {
   // Điều kiện ở cấp Tutor
   const tutorMatch = { status: TUTOR_STATUS.APPROVED };
   if (filters.subject) {
-    // Khớp chính xác tên môn (không phân biệt hoa/thường)
-    tutorMatch.subjects = { $regex: `^${escapeRegExp(String(filters.subject).trim())}$`, $options: "i" };
+    // Khớp chính xác tên môn (không dấu + không phân biệt hoa/thường)
+    tutorMatch.subjects = { $regex: `^${buildDiacriticInsensitivePattern(filters.subject)}$`, $options: "i" };
   }
   if (filters.occupationStatus) {
     tutorMatch.occupationStatus = filters.occupationStatus;
@@ -129,8 +177,8 @@ const searchTutors = async (filters = {}, page = 1, limit = 20) => {
     userMatch["userId.gender"] = filters.gender;
   }
   if (filters.name && String(filters.name).trim()) {
-    // Tìm theo tên gia sư (khớp một phần, không phân biệt hoa/thường)
-    userMatch["userId.fullName"] = { $regex: escapeRegExp(String(filters.name).trim()), $options: "i" };
+    // Tìm theo tên gia sư (khớp một phần, không dấu + không phân biệt hoa/thường)
+    userMatch["userId.fullName"] = { $regex: buildDiacriticInsensitivePattern(filters.name), $options: "i" };
   }
   if (filters.yearOfBirth) {
     const year = parseInt(filters.yearOfBirth, 10);
@@ -206,7 +254,7 @@ const findApprovedForReviewAdmin = async ({ page = 1, limit = 10, keyword = "" }
   ];
 
   if (keyword && keyword.trim()) {
-    const pattern = new RegExp(escapeRegExp(keyword.trim()), "i");
+    const pattern = diacriticInsensitiveRegex(keyword);
     pipeline.push({ $match: { "user.fullName": pattern } });
   }
 
@@ -239,11 +287,17 @@ const findApprovedForReviewAdmin = async ({ page = 1, limit = 10, keyword = "" }
   return { items, totalItems };
 };
 
+// Xóa hồ sơ gia sư của một người dùng (xóa vĩnh viễn tài khoản)
+const deleteByUserId = async (userId) => {
+  return await Tutor.findOneAndDelete({ userId });
+};
+
 module.exports = {
   findByUserId,
   findApprovedForReviewAdmin,
   findTopTutorsThisMonth,
   findById,
+  findTrustedTutorIds,
   create,
   update,
   updateByUserId,
@@ -255,4 +309,5 @@ module.exports = {
   findTopTutors,
   findNewTutors,
   searchTutors,
+  deleteByUserId,
 };
