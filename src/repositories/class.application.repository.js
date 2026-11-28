@@ -1,4 +1,8 @@
-const { ClassApplication, CLASS_APPLICATION_STATUS } = require("../models/class.application.model");
+const { ClassApplication } = require("../models/class.application.model");
+const {
+  CLASS_APPLICATION_STATUS,
+  CLASS_APPLICATION_ORIGIN,
+} = require("../constants/classApplication");
 
 // Đầy đủ các field bài đăng mà mapper/khu vực admin cần để hiển thị chi tiết.
 const POPULATE_CLASS =
@@ -97,6 +101,7 @@ const distinctClassIdsWithActiveApplications = async () => {
 const findApplicantsByClassId = async (classId) => {
   const docs = await ClassApplication.find({
     classId,
+    origin: CLASS_APPLICATION_ORIGIN.APPLY, // chỉ gia sư tự ứng tuyển; loại lời mời trực tiếp
     status: {
       $in: [
         CLASS_APPLICATION_STATUS.PENDING,
@@ -232,8 +237,10 @@ const findByStatus = async (status) => {
 };
 
 // Một trang đơn nhận lớp theo trạng thái (admin duyệt nhận lớp), mới nhất trước.
-const findByStatusPage = async ({ status, page = 1, limit = 10 }) => {
+// origin (optional): "apply" | "invite" để admin chia 2 mục.
+const findByStatusPage = async ({ status, origin, page = 1, limit = 10 }) => {
   const filter = status && status !== "all" ? { status } : {};
+  if (origin) filter.origin = origin;
   const skip = (Math.max(1, page) - 1) * limit;
   return await ClassApplication.find(filter)
     .populate("classId", POPULATE_CLASS)
@@ -246,14 +253,45 @@ const findByStatusPage = async ({ status, page = 1, limit = 10 }) => {
     .limit(limit);
 };
 
-const countAll = async () => {
+const countAll = async (origin) => {
+  const base = origin ? { origin } : {};
   const [pending, selected, approved, rejected] = await Promise.all([
-    ClassApplication.countDocuments({ status: CLASS_APPLICATION_STATUS.PENDING }),
-    ClassApplication.countDocuments({ status: CLASS_APPLICATION_STATUS.SELECTED }),
-    ClassApplication.countDocuments({ status: CLASS_APPLICATION_STATUS.APPROVED }),
-    ClassApplication.countDocuments({ status: CLASS_APPLICATION_STATUS.REJECTED }),
+    ClassApplication.countDocuments({ ...base, status: CLASS_APPLICATION_STATUS.PENDING }),
+    ClassApplication.countDocuments({ ...base, status: CLASS_APPLICATION_STATUS.SELECTED }),
+    ClassApplication.countDocuments({ ...base, status: CLASS_APPLICATION_STATUS.APPROVED }),
+    ClassApplication.countDocuments({ ...base, status: CLASS_APPLICATION_STATUS.REJECTED }),
   ]);
   return { pending, selected, approved, rejected };
+};
+
+// ── Luồng mời gia sư trực tiếp ──
+// Lời mời của một gia sư (mặc định đang chờ phản hồi: INVITED), kèm chi tiết lớp.
+const findInvitationsByTutor = async (tutorId, { status, page = 1, limit = 10 } = {}) => {
+  const filter = { tutorId, origin: CLASS_APPLICATION_ORIGIN.INVITE };
+  if (status && status !== "all") filter.status = status;
+  const skip = (Math.max(1, page) - 1) * limit;
+  const [docs, totalItems] = await Promise.all([
+    ClassApplication.find(filter)
+      .populate("classId", POPULATE_CLASS)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit),
+    ClassApplication.countDocuments(filter),
+  ]);
+  return { docs, totalItems };
+};
+
+// Đơn mời (origin=invite) cho nhiều bài đăng cùng lúc — để hiển thị kết quả mời trong
+// "Bài đăng của tôi" (gia sư được mời + trạng thái + lý do từ chối).
+const findInviteByClassIds = async (classIds = []) => {
+  if (!classIds.length) return [];
+  return await ClassApplication.find({
+    classId: { $in: classIds },
+    origin: CLASS_APPLICATION_ORIGIN.INVITE,
+  }).populate({
+    path: "tutorId",
+    populate: { path: "userId", select: POPULATE_TUTOR_USER },
+  });
 };
 
 const update = async (id, updateData) => {
@@ -309,6 +347,8 @@ const countActiveApplicantsByClassIds = async (classIds = []) => {
     {
       $match: {
         classId: { $in: classIds },
+        // Chỉ đếm gia sư tự ứng tuyển (origin=apply); lời mời trực tiếp hiển thị riêng
+        origin: CLASS_APPLICATION_ORIGIN.APPLY,
         status: { $in: [CLASS_APPLICATION_STATUS.PENDING, CLASS_APPLICATION_STATUS.SELECTED] },
       },
     },
@@ -323,6 +363,16 @@ const countActiveApplicantsByClassIds = async (classIds = []) => {
 // Xóa toàn bộ đơn nhận lớp thuộc một bài đăng (dùng khi admin xóa bài đăng)
 const deleteByClassId = async (classId) => {
   return await ClassApplication.deleteMany({ classId });
+};
+
+// Xóa đơn nhận lớp thuộc nhiều bài đăng (xóa vĩnh viễn tài khoản người đăng)
+const deleteByClassIds = async (classIds) => {
+  return await ClassApplication.deleteMany({ classId: { $in: classIds } });
+};
+
+// Xóa toàn bộ đơn nhận lớp của một gia sư (xóa vĩnh viễn tài khoản gia sư)
+const deleteByTutorId = async (tutorId) => {
+  return await ClassApplication.deleteMany({ tutorId });
 };
 
 module.exports = {
@@ -345,6 +395,8 @@ module.exports = {
   findAllPending,
   findByStatus,
   findByStatusPage,
+  findInvitationsByTutor,
+  findInviteByClassIds,
   update,
   countPending,
   countSelected,
@@ -354,4 +406,6 @@ module.exports = {
   countByClassIds,
   countActiveApplicantsByClassIds,
   deleteByClassId,
+  deleteByClassIds,
+  deleteByTutorId,
 };
